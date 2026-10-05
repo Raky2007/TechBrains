@@ -1,0 +1,31 @@
+# Environment files
+.env
+.env.local
+
+# Node modules
+node_modules/
+dist/
+build/
+
+# Database files & logs
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+nexus.db
+nexus.db-wal
+nexus.db-shm
+nexus_backup/
+
+# Server uploads (keep placeholder if any)
+server/uploads/*
+!server/uploads/.gitkeep
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
