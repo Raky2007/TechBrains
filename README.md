@@ -197,3 +197,5 @@ New-NetFirewallRule -DisplayName "NEXUS LAN Game Server" -Direction Inbound -Loc
   - `uploads/` (All uploaded question media)
   - `backup-metadata.json` (Record counts and session snapshot)
 - **Restoration**: To restore from a backup, simply copy the backed-up `nexus.db` back to the project root and restart the server.
+#   T e c h B r a i n s  
+ 
