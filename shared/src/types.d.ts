@@ -10,10 +10,15 @@ export interface GameSettings {
     level1DurationMinutes: number;
     level2DurationMinutes: number;
     initialCredits: number;
+    /** Explicit, consistent maximum for the Round 2 evaluation score (default 20). */
+    round2MaxScore: number;
     resultsPublished: boolean;
     tieBreakerRule: 'default' | 'l2_first' | 'l1_accuracy' | 'time_first';
     randomizeQuestionOrder: boolean;
 }
+export type EvaluationStatus = 'pending' | 'completed' | 'failed';
+export type EvaluationSource = 'ai' | 'manual';
+export type CaseMediaType = 'image' | 'video' | 'audio';
 export interface RubricConfig {
     maxAccuracy: number;
     maxReasoning: number;
@@ -117,6 +122,46 @@ export interface Level2Case {
     initial_credits: number;
     is_active: number;
     rubric_json: string;
+    viewing_duration_seconds: number;
+    replay_cost: number;
+    reference_answer: string | null;
+    evaluation_guidance: string | null;
+    created_at: string;
+    updated_at: string;
+}
+export interface CaseMedia {
+    id: string;
+    case_id: string;
+    media_type: CaseMediaType;
+    media_path: string;
+    caption: string | null;
+    display_order: number;
+    created_at: string;
+}
+export interface MediaReplay {
+    id: string;
+    round_id: string;
+    team_id: string;
+    case_id: string;
+    credits_spent: number;
+    operation_id: string;
+    created_at: string;
+}
+export interface CaseEvaluation {
+    id: string;
+    conclusion_id: string;
+    status: EvaluationStatus;
+    score: number | null;
+    max_score: number;
+    verdict: string | null;
+    reasoning: string | null;
+    provider: string | null;
+    model: string | null;
+    source: EvaluationSource;
+    is_overridden: number;
+    error_message: string | null;
+    attempt_count: number;
+    evaluator_id: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -133,7 +178,8 @@ export interface Clue {
     updated_at: string;
 }
 /**
- * Clue list item sent to team (content and media_path hidden if locked)
+ * Clue list item sent to team. TechBrains clues are TEXT ONLY — content is
+ * hidden until the clue is unlocked by the team.
  */
 export interface ClientClue {
     id: string;
@@ -142,8 +188,17 @@ export interface ClientClue {
     display_order: number;
     is_unlocked: boolean;
     content?: string;
-    media_path?: string | null;
     unlocked_at?: string;
+}
+/**
+ * Case media item sent to team (only delivered while media is viewable)
+ */
+export interface ClientCaseMedia {
+    id: string;
+    media_type: CaseMediaType;
+    media_path: string;
+    caption: string | null;
+    display_order: number;
 }
 export interface ClueUnlock {
     id: string;
@@ -159,7 +214,7 @@ export interface CreditTransaction {
     team_id: string;
     clue_id: string | null;
     amount: number;
-    transaction_type: 'initial_grant' | 'clue_unlock' | 'admin_adjustment';
+    transaction_type: 'initial_grant' | 'clue_unlock' | 'media_replay' | 'admin_adjustment';
     operation_id: string;
     created_at: string;
 }
@@ -241,21 +296,38 @@ export interface TeamPrivateState {
             id: string;
             title: string;
             situation_description: string;
-            media_path: string | null;
             initial_credits: number;
         } | null;
+        /** Server-authoritative media lifecycle for this team. */
+        media: {
+            /** Whether the case media is viewable by this team right now. */
+            is_visible: boolean;
+            /** True once the initial free viewing window has elapsed. */
+            initial_window_elapsed: boolean;
+            /** ISO timestamp when the current viewing window closes (null if hidden). */
+            viewing_ends_at: string | null;
+            viewing_duration_seconds: number;
+            replay_cost: number;
+            replay_count: number;
+            /** Media assets, only populated while is_visible is true. */
+            items: ClientCaseMedia[];
+        };
         clues: ClientClue[];
+        /** True once this team has made its one irreversible final submission. */
+        is_locked: boolean;
         conclusion: {
             text: string;
             status: ConclusionStatus;
             submitted_at: string | null;
         } | null;
+        /** TechBrains AI/manual evaluation (null until evaluated). */
         evaluation?: {
-            accuracy_score: number;
-            reasoning_score: number;
-            efficiency_score: number;
-            total_score: number;
-            feedback: string | null;
+            status: EvaluationStatus;
+            score: number | null;
+            max_score: number;
+            verdict: string | null;
+            reasoning: string | null;
+            is_overridden: boolean;
         } | null;
     };
 }

@@ -40,12 +40,12 @@ export interface BrandingConfig {
 }
 
 export const BRANDING: BrandingConfig = {
-  title: "NEXUS // AI INVESTIGATION",
-  shortTitle: "NEXUS",
-  subtitle: "COLLEGIATE FORENSICS & VERIFICATION CHALLENGE",
-  eventEdition: "COLLEGE TECHNICAL EVENT EDITION",
-  tagline: "Distinguish synthetic artifice from human truth. Inspect the forensic evidence. State your conclusion.",
-  description: "A two-phase competitive forensic event. Phase 1: Real-time artifact discernment. Phase 2: Evidence unlocking with credits and investigative deduction.",
+  title: "TECHBRAINS",
+  shortTitle: "TECHBRAINS",
+  subtitle: "LIVE TEAM TECHNICAL CHALLENGE",
+  eventEdition: "COLLEGE TECHNICAL EVENT",
+  tagline: "Round 1: tell AI from human. Round 2: investigate the case, spend your credits wisely, and submit one final answer.",
+  description: "A live two-round team competition. Round 1: AI-or-Human discernment. Round 2: a credit-driven case investigation with text clues, timed media replay, and AI-evaluated final answers.",
   colors: {
     bgMain: "#FFFFFF",
     bgSecondary: "#F5F5F2",

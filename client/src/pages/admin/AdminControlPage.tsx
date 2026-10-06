@@ -334,7 +334,27 @@ export const AdminControlPage: React.FC = () => {
           Tournament Resolution & Reset
         </h2>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* Complete Event */}
+          <button
+            type="button"
+            disabled={actionInProgress !== null}
+            onClick={() => {
+              setConfirmConfig({
+                isOpen: true,
+                title: 'Complete the Event?',
+                message: 'This ends any active round and marks the entire event as complete. Results are published separately.',
+                isDestructive: false,
+                confirmLabel: 'Complete Event',
+                action: async () => executeControl('complete_event')
+              });
+            }}
+            className="p-4 rounded-xl border border-[#171717]/20 bg-[#171717]/5 hover:bg-[#171717]/10 text-[#171717] font-heading font-bold text-xs tracking-wider uppercase transition-colors flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            <span>COMPLETE EVENT</span>
+          </button>
+
           {/* Publish Results: Success green #18794E */}
           <button
             type="button"

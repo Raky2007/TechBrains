@@ -14,10 +14,14 @@ import {
   adminCreateQuestionSchema,
   adminUpdateQuestionSchema,
   adminCreateCaseSchema,
+  adminUpdateCaseSchema,
+  adminCaseMediaSchema,
   adminCreateClueSchema,
-  adminEvaluateSchema,
+  adminUpdateClueSchema,
+  adminEvaluationOverrideSchema,
   adminSettingsSchema
 } from '@nexus/shared';
+import { emitToTeam } from '../sockets/socketHandler.js';
 
 const router = Router();
 
@@ -101,6 +105,12 @@ router.post('/controls', (req: Request, res: Response): void => {
         const result = GameService.endRound(adminId, level);
         broadcastRoundEvent('round:ended', { level, round: result.round });
         res.json({ success: true, message: `Level ${level} ended.`, round: result.round });
+        break;
+      }
+      case 'complete_event': {
+        const updatedSession = GameService.completeEvent(adminId);
+        broadcastGameState();
+        res.json({ success: true, message: 'Event marked complete.', session: updatedSession });
         break;
       }
       case 'publish_results': {
@@ -278,8 +288,93 @@ router.get('/cases', (_req: Request, res: Response): void => {
   const cases = db.prepare('SELECT * FROM level2_cases ORDER BY created_at DESC').all() as any[];
   for (const c of cases) {
     c.clues = db.prepare('SELECT * FROM clues WHERE case_id = ? ORDER BY display_order ASC').all(c.id);
+    c.media = db.prepare('SELECT * FROM case_media WHERE case_id = ? ORDER BY display_order ASC').all(c.id);
   }
   res.json({ cases });
+});
+
+router.put('/cases/:id', (req: Request, res: Response): void => {
+  try {
+    const { id } = req.params;
+    const parseResult = adminUpdateCaseSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid case update.' });
+      return;
+    }
+    const db = getDb();
+    const existing = db.prepare('SELECT * FROM level2_cases WHERE id = ?').get(id);
+    if (!existing) {
+      res.status(404).json({ error: 'Case not found.' });
+      return;
+    }
+    const c = parseResult.data;
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE level2_cases
+      SET title = COALESCE(?, title),
+          situation_description = COALESCE(?, situation_description),
+          media_path = COALESCE(?, media_path),
+          initial_credits = COALESCE(?, initial_credits),
+          viewing_duration_seconds = COALESCE(?, viewing_duration_seconds),
+          replay_cost = COALESCE(?, replay_cost),
+          reference_answer = COALESCE(?, reference_answer),
+          evaluation_guidance = COALESCE(?, evaluation_guidance),
+          is_active = COALESCE(?, is_active),
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      c.title ?? null,
+      c.situation_description ?? null,
+      c.media_path ?? null,
+      c.initial_credits ?? null,
+      c.viewing_duration_seconds ?? null,
+      c.replay_cost ?? null,
+      c.reference_answer ?? null,
+      c.evaluation_guidance ?? null,
+      c.is_active ?? null,
+      now,
+      id
+    );
+    logAuditAction(req.adminUser!.id, 'UPDATE_CASE', 'level2_cases', id, { fields: Object.keys(c) });
+    const updated = db.prepare('SELECT * FROM level2_cases WHERE id = ?').get(id);
+    res.json({ success: true, case: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update case.' });
+  }
+});
+
+router.post('/case-media', (req: Request, res: Response): void => {
+  try {
+    const parseResult = adminCaseMediaSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid media data' });
+      return;
+    }
+    const m = parseResult.data;
+    const db = getDb();
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO case_media (id, case_id, media_type, media_path, caption, display_order, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, m.case_id, m.media_type, m.media_path, m.caption || null, m.display_order, now);
+    logAuditAction(req.adminUser!.id, 'CREATE_CASE_MEDIA', 'case_media', id, { case_id: m.case_id, media_type: m.media_type });
+    const created = db.prepare('SELECT * FROM case_media WHERE id = ?').get(id);
+    res.status(201).json({ success: true, media: created });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to add case media.' });
+  }
+});
+
+router.delete('/case-media/:id', (req: Request, res: Response): void => {
+  try {
+    const { id } = req.params;
+    getDb().prepare('DELETE FROM case_media WHERE id = ?').run(id);
+    logAuditAction(req.adminUser!.id, 'DELETE_CASE_MEDIA', 'case_media', id);
+    res.json({ success: true, message: 'Case media removed.' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete case media.' });
+  }
 });
 
 router.post('/cases', (req: Request, res: Response): void => {
@@ -303,9 +398,17 @@ router.post('/cases', (req: Request, res: Response): void => {
     });
 
     db.prepare(`
-      INSERT INTO level2_cases (id, title, situation_description, media_path, initial_credits, is_active, rubric_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, c.title, c.situation_description, c.media_path || null, c.initial_credits, c.is_active, rubricJson, now, now);
+      INSERT INTO level2_cases (
+        id, title, situation_description, media_path, initial_credits, is_active, rubric_json,
+        viewing_duration_seconds, replay_cost, reference_answer, evaluation_guidance,
+        created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, c.title, c.situation_description, c.media_path || null, c.initial_credits, c.is_active, rubricJson,
+      c.viewing_duration_seconds, c.replay_cost, c.reference_answer || null, c.evaluation_guidance || null,
+      now, now
+    );
 
     logAuditAction(req.adminUser!.id, 'CREATE_CASE', 'level2_cases', id, { title: c.title });
     const created = db.prepare('SELECT * FROM level2_cases WHERE id = ?').get(id);
@@ -328,10 +431,11 @@ router.post('/clues', (req: Request, res: Response): void => {
     const id = uuidv4();
     const now = new Date().toISOString();
 
+    // TechBrains clues are TEXT ONLY — media_path is always null.
     db.prepare(`
       INSERT INTO clues (id, case_id, title, content, media_path, credit_cost, display_order, is_active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, clue.case_id, clue.title, clue.content, clue.media_path || null, clue.credit_cost, clue.display_order, clue.is_active, now, now);
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+    `).run(id, clue.case_id, clue.title, clue.content, clue.credit_cost, clue.display_order, clue.is_active, now, now);
 
     logAuditAction(req.adminUser!.id, 'CREATE_CLUE', 'clues', id, { title: clue.title });
     const created = db.prepare('SELECT * FROM clues WHERE id = ?').get(id);
@@ -341,13 +445,68 @@ router.post('/clues', (req: Request, res: Response): void => {
   }
 });
 
+router.put('/clues/:id', (req: Request, res: Response): void => {
+  try {
+    const { id } = req.params;
+    const parseResult = adminUpdateClueSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid clue update.' });
+      return;
+    }
+
+    const db = getDb();
+    const existing = db.prepare('SELECT * FROM clues WHERE id = ?').get(id);
+    if (!existing) {
+      res.status(404).json({ error: 'Clue not found.' });
+      return;
+    }
+
+    const u = parseResult.data;
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE clues
+      SET title = COALESCE(?, title),
+          content = COALESCE(?, content),
+          credit_cost = COALESCE(?, credit_cost),
+          display_order = COALESCE(?, display_order),
+          is_active = COALESCE(?, is_active),
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      u.title ?? null,
+      u.content ?? null,
+      u.credit_cost ?? null,
+      u.display_order ?? null,
+      u.is_active ?? null,
+      now,
+      id
+    );
+
+    logAuditAction(req.adminUser!.id, 'UPDATE_CLUE', 'clues', id, u);
+    const updated = db.prepare('SELECT * FROM clues WHERE id = ?').get(id);
+    res.json({ success: true, clue: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update clue.' });
+  }
+});
+
 router.delete('/clues/:id', (req: Request, res: Response): void => {
   try {
     const { id } = req.params;
     const db = getDb();
-    db.prepare('DELETE FROM clues WHERE id = ?').run(id);
-    logAuditAction(req.adminUser!.id, 'DELETE_CLUE', 'clues', id);
-    res.json({ success: true, message: 'Clue removed.' });
+
+    // If the clue has already been unlocked by any team, archive it instead of
+    // deleting — preserving clue_unlocks and credit_transactions history.
+    const isReferenced = (db.prepare('SELECT COUNT(*) as count FROM clue_unlocks WHERE clue_id = ?').get(id) as any).count;
+    if (isReferenced > 0) {
+      db.prepare('UPDATE clues SET is_active = 0, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+      logAuditAction(req.adminUser!.id, 'ARCHIVE_CLUE', 'clues', id);
+      res.json({ success: true, message: 'Clue was already purchased by teams and has been archived.' });
+    } else {
+      db.prepare('DELETE FROM clues WHERE id = ?').run(id);
+      logAuditAction(req.adminUser!.id, 'DELETE_CLUE', 'clues', id);
+      res.json({ success: true, message: 'Clue removed.' });
+    }
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to delete clue.' });
   }
@@ -391,7 +550,7 @@ router.get('/submissions', (_req: Request, res: Response): void => {
   const { session } = GameService.getGameSession();
 
   const submissions = db.prepare(`
-    SELECT 
+    SELECT
       c.id as conclusion_id,
       c.team_id,
       c.conclusion_text,
@@ -401,18 +560,25 @@ router.get('/submissions', (_req: Request, res: Response): void => {
       t.current_credits,
       t.initial_credits,
       t.level1_score,
-      (SELECT COALESCE(SUM(credits_spent), 0) FROM clue_unlocks WHERE team_id = t.id) as credits_spent,
+      t.level2_score,
+      (SELECT COALESCE(SUM(credits_spent), 0) FROM clue_unlocks WHERE team_id = t.id) as clue_credits_spent,
       (SELECT COUNT(*) FROM clue_unlocks WHERE team_id = t.id) as unlocked_count,
+      (SELECT COUNT(*) FROM media_replays WHERE team_id = t.id) as replay_count,
+      (SELECT COALESCE(SUM(credits_spent), 0) FROM media_replays WHERE team_id = t.id) as replay_credits_spent,
       e.id as evaluation_id,
-      e.accuracy_score,
-      e.reasoning_score,
-      e.efficiency_score,
-      e.total_score,
-      e.feedback,
-      e.evaluated_at
+      e.status as evaluation_status,
+      e.score as evaluation_score,
+      e.max_score as evaluation_max_score,
+      e.verdict as evaluation_verdict,
+      e.reasoning as evaluation_reasoning,
+      e.source as evaluation_source,
+      e.is_overridden as evaluation_is_overridden,
+      e.error_message as evaluation_error,
+      e.attempt_count as evaluation_attempts,
+      e.updated_at as evaluated_at
     FROM conclusions c
     JOIN teams t ON t.id = c.team_id
-    LEFT JOIN evaluations e ON e.conclusion_id = c.id
+    LEFT JOIN case_evaluations e ON e.conclusion_id = c.id
     WHERE t.game_session_id = ?
     ORDER BY c.submitted_at DESC
   `).all(session.id);
@@ -420,44 +586,47 @@ router.get('/submissions', (_req: Request, res: Response): void => {
   res.json({ submissions });
 });
 
-router.post('/evaluations', (req: Request, res: Response): void => {
+/**
+ * Trigger / retry AI evaluation for a submitted conclusion.
+ * Route: POST /api/admin/evaluations/:conclusionId/evaluate
+ */
+router.post('/evaluations/:conclusionId/evaluate', async (req: Request, res: Response): Promise<void> => {
   try {
-    const parseResult = adminEvaluateSchema.safeParse(req.body);
-    if (!parseResult.success) {
-      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid evaluation scores' });
-      return;
-    }
-
-    const { conclusion_id, accuracy_score, reasoning_score, efficiency_score, feedback } = parseResult.data;
-    const evaluation = GameService.evaluateConclusion(
-      req.adminUser!.id,
-      conclusion_id,
-      accuracy_score,
-      reasoning_score,
-      efficiency_score,
-      feedback || null
-    );
-
+    const { conclusionId } = req.params;
+    const evaluation = await GameService.runAiEvaluation(conclusionId);
+    const teamId = (getDb().prepare('SELECT team_id FROM conclusions WHERE id = ?').get(conclusionId) as any)?.team_id;
+    if (teamId) emitToTeam(teamId, 'team:private_updated', GameService.getTeamPrivateState(teamId));
     res.json({ success: true, evaluation });
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Failed to save evaluation.' });
+    res.status(400).json({ error: err.message || 'Failed to run AI evaluation.' });
   }
 });
 
-router.post('/submissions/:id/reopen', (req: Request, res: Response): void => {
+/**
+ * Manual evaluation / override of a conclusion (authoritative over AI).
+ * Route: POST /api/admin/evaluations/override
+ */
+router.post('/evaluations/override', (req: Request, res: Response): void => {
   try {
-    const { id } = req.params;
-    const db = getDb();
-    db.prepare(`UPDATE conclusions SET status = 'reopened', updated_at = ? WHERE id = ?`).run(
-      new Date().toISOString(),
-      id
-    );
-    logAuditAction(req.adminUser!.id, 'REOPEN_SUBMISSION', 'conclusions', id);
-    res.json({ success: true, message: 'Conclusion submission reopened for editing.' });
+    const parseResult = adminEvaluationOverrideSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid override.' });
+      return;
+    }
+    const { conclusion_id, score, verdict, reasoning } = parseResult.data;
+    const evaluation = GameService.overrideEvaluation(req.adminUser!.id, conclusion_id, score, verdict, reasoning || null);
+    const teamId = (getDb().prepare('SELECT team_id FROM conclusions WHERE id = ?').get(conclusion_id) as any)?.team_id;
+    if (teamId) emitToTeam(teamId, 'team:private_updated', GameService.getTeamPrivateState(teamId));
+    res.json({ success: true, evaluation });
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Failed to reopen submission.' });
+    res.status(400).json({ error: err.message || 'Failed to override evaluation.' });
   }
 });
+
+// NOTE: The legacy "reopen submission" route has been removed. In TechBrains a
+// final answer is immutable once submitted (enforced in GameService and by the
+// trg_conclusions_immutable_after_submit DB trigger). Admins correct outcomes
+// via the evaluation override flow, never by editing the answer itself.
 
 /**
  * Settings

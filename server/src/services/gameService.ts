@@ -12,8 +12,11 @@ import {
   Level2Case,
   Clue,
   ClientClue,
+  ClientCaseMedia,
+  CaseMedia,
+  CaseEvaluation,
+  MediaReplay,
   Conclusion,
-  Evaluation,
   Level1AnswerChoice,
   PublicGameState,
   TeamPrivateState
@@ -21,6 +24,15 @@ import {
 import { calculateLevel1Score, calculateAuthoritativeLeaderboard } from './scoringService.js';
 import { isRoundExpired, getAuthoritativeTimerState } from './timerService.js';
 import { logAuditAction } from './auditService.js';
+import { evaluateCaseAnswer, isAiConfigured } from './aiEvaluationService.js';
+
+/**
+ * Backfill any missing settings keys from defaults so sessions created before a
+ * settings-shape change (e.g. round2MaxScore) remain valid and complete.
+ */
+function normalizeSettings(raw: Partial<GameSettings>): GameSettings {
+  return { ...(CONFIG.DEFAULT_SETTINGS as GameSettings), ...raw };
+}
 
 export class GameService {
   /**
@@ -43,7 +55,7 @@ export class GameService {
       session = db.prepare('SELECT * FROM game_sessions WHERE id = ?').get(sessionId) as GameSession;
     }
 
-    const settings: GameSettings = JSON.parse(session.settings_json);
+    const settings: GameSettings = normalizeSettings(JSON.parse(session.settings_json));
     const activeRound = db.prepare(`
       SELECT * FROM rounds 
       WHERE game_session_id = ? AND status IN ('active', 'paused')
@@ -244,46 +256,6 @@ export class GameService {
   }
 
   /**
-   * Allows participants/teams to start a round directly without requiring admin intervention
-   */
-  static participantStartLevel(teamId: string, level: 1 | 2): { round: Round; session: GameSession } {
-    const { session, activeRound } = this.getGameSession();
-
-    if (level === 1) {
-      if (activeRound && activeRound.level === 1) {
-        this.ensureTeamQuestionsAssigned(activeRound.id, teamId);
-        return { round: activeRound, session };
-      }
-      // If round 2 or previous round was running, conclude it and restart Level 1
-      if (activeRound) {
-        this.endRound(teamId, activeRound.level as 1 | 2);
-      }
-      const db = getDb();
-      db.prepare("UPDATE game_sessions SET status = 'idle', current_level = 1, updated_at = ? WHERE id = ?").run(new Date().toISOString(), session.id);
-      const result = this.startRound(teamId, 1);
-      this.ensureTeamQuestionsAssigned(result.round.id, teamId);
-      return result;
-    }
-
-    if (level === 2) {
-      if (activeRound && activeRound.level === 2) {
-        return { round: activeRound, session };
-      }
-      if (activeRound && activeRound.level === 1) {
-        this.endRound(teamId, 1);
-      }
-      const refreshed = this.getGameSession();
-      if (refreshed.session.status !== 'level1_ended') {
-        const db = getDb();
-        db.prepare("UPDATE game_sessions SET status = 'level1_ended', current_level = 1, updated_at = ? WHERE id = ?").run(new Date().toISOString(), session.id);
-      }
-      return this.startRound(teamId, 2);
-    }
-
-    throw new Error(`Cannot start Level ${level} from current session status: ${session.status}`);
-  }
-
-  /**
    * Pause the active round
    */
   static pauseRound(adminUserId: string, level: 1 | 2): { round: Round; session: GameSession } {
@@ -429,23 +401,35 @@ export class GameService {
   }
 
   /**
-   * Publish final leaderboard results
+   * Publish the final leaderboard (embargo lift). Does NOT change game status —
+   * completing the event is a separate, explicit admin action.
    */
   static publishFinalResults(adminUserId: string): GameSession {
     const db = getDb();
-    const { session } = this.getGameSession();
+    const { session, settings } = this.getGameSession();
     const now = new Date().toISOString();
 
-    const settings = JSON.parse(session.settings_json);
-    settings.resultsPublished = true;
-
+    const updated = { ...settings, resultsPublished: true };
     db.prepare(`
-      UPDATE game_sessions 
-      SET status = 'completed', settings_json = ?, updated_at = ? 
-      WHERE id = ?
-    `).run(JSON.stringify(settings), now, session.id);
+      UPDATE game_sessions SET settings_json = ?, updated_at = ? WHERE id = ?
+    `).run(JSON.stringify(updated), now, session.id);
 
     logAuditAction(adminUserId, 'PUBLISH_RESULTS', 'game_sessions', session.id);
+    return db.prepare('SELECT * FROM game_sessions WHERE id = ?').get(session.id) as GameSession;
+  }
+
+  /**
+   * Mark the whole event complete. Any still-active round is ended first.
+   */
+  static completeEvent(adminUserId: string): GameSession {
+    const db = getDb();
+    const { session, activeRound } = this.getGameSession();
+    if (activeRound) {
+      this.endRound(adminUserId, activeRound.level as 1 | 2);
+    }
+    const now = new Date().toISOString();
+    db.prepare(`UPDATE game_sessions SET status = 'completed', updated_at = ? WHERE id = ?`).run(now, session.id);
+    logAuditAction(adminUserId, 'COMPLETE_EVENT', 'game_sessions', session.id);
     return db.prepare('SELECT * FROM game_sessions WHERE id = ?').get(session.id) as GameSession;
   }
 
@@ -574,6 +558,11 @@ export class GameService {
       throw new Error('Level 2 time limit has expired.');
     }
 
+    // Enforce the final-answer lock server-side: no spending after submission.
+    if (this.isTeamLocked(activeRound.id, teamId)) {
+      throw new Error('Your final answer has been submitted. Clue purchases are no longer available.');
+    }
+
     const opId = operationId || uuidv4();
 
     // Fetch team & clue
@@ -640,99 +629,385 @@ export class GameService {
   }
 
   /**
-   * Submit or update Level 2 conclusion
+   * Submit the team's ONE irreversible final answer for Round 2.
+   *
+   * TechBrains rule: exactly one submission per team. Once submitted the answer
+   * is immutable — enforced here in the service layer, backed by the
+   * trg_conclusions_immutable_after_submit database trigger (defense in depth).
+   * There is no draft/update/resubmit path.
    */
   static submitConclusion(teamId: string, text: string): Conclusion {
     const db = getDb();
-    const { session, activeRound } = this.getGameSession();
+    const { activeRound } = this.getGameSession();
 
-    if (!activeRound || activeRound.level !== 2) {
-      throw new Error('Level 2 round is not active for conclusion submission.');
+    if (!activeRound || activeRound.level !== 2 || activeRound.status !== 'active') {
+      throw new Error('Level 2 is not currently active for final submission.');
+    }
+    if (isRoundExpired(activeRound)) {
+      throw new Error('Level 2 time limit has expired. No further submissions are accepted.');
     }
 
     const trimmed = text.trim();
     if (trimmed.length < 10) {
-      throw new Error('Conclusion must be at least 10 characters long.');
+      throw new Error('Final answer must be at least 10 characters long.');
     }
 
+    // Any existing conclusion row means the team has already made its one
+    // irreversible submission — reject outright (no edits, no resubmission).
     const existing = db.prepare(`
-      SELECT * FROM conclusions 
-      WHERE round_id = ? AND team_id = ?
-    `).get(activeRound.id, teamId) as Conclusion | undefined;
-
-    const now = new Date().toISOString();
+      SELECT id, status FROM conclusions WHERE round_id = ? AND team_id = ?
+    `).get(activeRound.id, teamId) as { id: string; status: string } | undefined;
 
     if (existing) {
-      db.prepare(`
-        UPDATE conclusions 
-        SET conclusion_text = ?, status = 'submitted', submitted_at = ?, updated_at = ? 
-        WHERE id = ?
-      `).run(trimmed, now, now, existing.id);
-      return db.prepare('SELECT * FROM conclusions WHERE id = ?').get(existing.id) as Conclusion;
-    } else {
-      const id = uuidv4();
+      throw new Error('Your final answer has already been submitted and cannot be changed.');
+    }
+
+    const id = uuidv4();
+    const now = new Date().toISOString();
+
+    // Insert directly as 'submitted'. A pending evaluation record is created so
+    // the admin queue reflects it immediately (populated by the AI evaluator).
+    const runTransaction = db.transaction(() => {
       db.prepare(`
         INSERT INTO conclusions (id, round_id, team_id, conclusion_text, status, submitted_at, updated_at)
         VALUES (?, ?, ?, ?, 'submitted', ?, ?)
       `).run(id, activeRound.id, teamId, trimmed, now, now);
-      return db.prepare('SELECT * FROM conclusions WHERE id = ?').get(id) as Conclusion;
-    }
+
+      const settings = JSON.parse(this.getGameSession().session.settings_json);
+      const maxScore = settings.round2MaxScore ?? 20;
+      db.prepare(`
+        INSERT INTO case_evaluations (id, conclusion_id, status, max_score, source, is_overridden, attempt_count, created_at, updated_at)
+        VALUES (?, ?, 'pending', ?, 'ai', 0, 0, ?, ?)
+      `).run(uuidv4(), id, maxScore, now, now);
+    });
+    runTransaction();
+
+    return db.prepare('SELECT * FROM conclusions WHERE id = ?').get(id) as Conclusion;
   }
 
   /**
-   * Evaluate a team's Level 2 conclusion using rubrics
+   * Ensure a case_evaluations row exists for a conclusion (idempotent).
    */
-  static evaluateConclusion(
-    adminUserId: string,
-    conclusionId: string,
-    accuracyScore: number,
-    reasoningScore: number,
-    efficiencyScore: number,
-    feedback: string | null = null
-  ): Evaluation {
+  private static ensureEvaluationRow(conclusionId: string, maxScore: number): CaseEvaluation {
+    const db = getDb();
+    let row = db.prepare('SELECT * FROM case_evaluations WHERE conclusion_id = ?').get(conclusionId) as CaseEvaluation | undefined;
+    if (!row) {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO case_evaluations (id, conclusion_id, status, max_score, source, is_overridden, attempt_count, created_at, updated_at)
+        VALUES (?, ?, 'pending', ?, 'ai', 0, 0, ?, ?)
+      `).run(uuidv4(), conclusionId, maxScore, now, now);
+      row = db.prepare('SELECT * FROM case_evaluations WHERE conclusion_id = ?').get(conclusionId) as CaseEvaluation;
+    }
+    return row;
+  }
+
+  /**
+   * Run (or re-run) the AI evaluation for a submitted final answer.
+   *
+   * The submission itself is never mutated. On success the evaluation is stored
+   * as 'completed' and becomes the authoritative Round 2 score (unless a manual
+   * override already exists). On failure the evaluation is marked 'failed' with
+   * an error message and the submission is preserved for admin retry/override.
+   */
+  static async runAiEvaluation(conclusionId: string): Promise<CaseEvaluation> {
     const db = getDb();
     const conclusion = db.prepare('SELECT * FROM conclusions WHERE id = ?').get(conclusionId) as Conclusion | undefined;
     if (!conclusion) throw new Error('Conclusion not found.');
 
-    const totalScore = Number((accuracyScore + reasoningScore + efficiencyScore).toFixed(2));
+    const activeCase = db.prepare('SELECT * FROM level2_cases WHERE is_active = 1 LIMIT 1').get() as Level2Case | undefined;
+    const { settings } = this.getGameSession();
+    const maxScore = settings.round2MaxScore ?? 20;
+
+    const existing = this.ensureEvaluationRow(conclusionId, maxScore);
+
+    // Never overwrite a manual admin override with an automated run.
+    if (existing.is_overridden === 1) {
+      return existing;
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`UPDATE case_evaluations SET status = 'pending', error_message = NULL, attempt_count = attempt_count + 1, updated_at = ? WHERE conclusion_id = ?`)
+      .run(now, conclusionId);
+
+    try {
+      const result = await evaluateCaseAnswer({
+        caseTitle: activeCase?.title || 'Case',
+        caseSituation: activeCase?.situation_description || '',
+        referenceAnswer: activeCase?.reference_answer ?? null,
+        evaluationGuidance: activeCase?.evaluation_guidance ?? null,
+        teamAnswer: conclusion.conclusion_text,
+        maxScore
+      });
+
+      const doneAt = new Date().toISOString();
+      const tx = db.transaction(() => {
+        db.prepare(`
+          UPDATE case_evaluations
+          SET status = 'completed', score = ?, max_score = ?, verdict = ?, reasoning = ?,
+              provider = ?, model = ?, source = 'ai', is_overridden = 0, error_message = NULL, updated_at = ?
+          WHERE conclusion_id = ?
+        `).run(result.score, maxScore, result.verdict, result.reasoning, result.provider, result.model, doneAt, conclusionId);
+
+        db.prepare(`UPDATE teams SET level2_score = ?, updated_at = ? WHERE id = ?`)
+          .run(result.score, doneAt, conclusion.team_id);
+      });
+      tx();
+
+      logAuditAction(null, 'AI_EVALUATION_COMPLETED', 'case_evaluations', conclusionId, {
+        teamId: conclusion.team_id, score: result.score, provider: result.provider
+      });
+    } catch (err: any) {
+      const failAt = new Date().toISOString();
+      db.prepare(`UPDATE case_evaluations SET status = 'failed', error_message = ?, updated_at = ? WHERE conclusion_id = ?`)
+        .run(String(err?.message || err).slice(0, 500), failAt, conclusionId);
+      logAuditAction(null, 'AI_EVALUATION_FAILED', 'case_evaluations', conclusionId, {
+        teamId: conclusion.team_id, error: String(err?.message || err).slice(0, 200)
+      });
+    }
+
+    return db.prepare('SELECT * FROM case_evaluations WHERE conclusion_id = ?').get(conclusionId) as CaseEvaluation;
+  }
+
+  /**
+   * Fire-and-forget automatic evaluation used right after a submission.
+   * Only runs when an AI provider is actually configured.
+   */
+  static autoEvaluate(conclusionId: string): void {
+    if (!isAiConfigured()) return;
+    this.runAiEvaluation(conclusionId).catch((err) => {
+      console.error('[GameService] autoEvaluate failed:', err?.message || err);
+    });
+  }
+
+  /**
+   * Admin manual evaluation / override. This is the authoritative source of
+   * truth whenever present and is never overwritten by a later AI run.
+   */
+  static overrideEvaluation(
+    adminUserId: string,
+    conclusionId: string,
+    score: number,
+    verdict: string,
+    reasoning: string | null
+  ): CaseEvaluation {
+    const db = getDb();
+    const conclusion = db.prepare('SELECT * FROM conclusions WHERE id = ?').get(conclusionId) as Conclusion | undefined;
+    if (!conclusion) throw new Error('Conclusion not found.');
+
+    const { settings } = this.getGameSession();
+    const maxScore = settings.round2MaxScore ?? 20;
+    this.ensureEvaluationRow(conclusionId, maxScore);
+
+    const clamped = Math.max(0, Math.min(maxScore, Math.round(score * 100) / 100));
     const now = new Date().toISOString();
 
-    const existingEval = db.prepare('SELECT id FROM evaluations WHERE conclusion_id = ?').get(conclusionId) as { id: string } | undefined;
-    let evalId = existingEval?.id;
+    const tx = db.transaction(() => {
+      db.prepare(`
+        UPDATE case_evaluations
+        SET status = 'completed', score = ?, max_score = ?, verdict = ?, reasoning = ?,
+            source = 'manual', is_overridden = 1, evaluator_id = ?, error_message = NULL, updated_at = ?
+        WHERE conclusion_id = ?
+      `).run(clamped, maxScore, verdict, reasoning, adminUserId, now, conclusionId);
+
+      db.prepare(`UPDATE teams SET level2_score = ?, updated_at = ? WHERE id = ?`)
+        .run(clamped, now, conclusion.team_id);
+    });
+    tx();
+
+    logAuditAction(adminUserId, 'EVALUATION_OVERRIDE', 'case_evaluations', conclusionId, {
+      teamId: conclusion.team_id, score: clamped
+    });
+
+    return db.prepare('SELECT * FROM case_evaluations WHERE conclusion_id = ?').get(conclusionId) as CaseEvaluation;
+  }
+
+  /**
+   * Returns true once a team has made its one irreversible final submission.
+   * This is the single source of truth for the Round 2 post-submission lock.
+   */
+  static isTeamLocked(roundId: string, teamId: string): boolean {
+    const db = getDb();
+    const row = db.prepare(
+      `SELECT status FROM conclusions WHERE round_id = ? AND team_id = ?`
+    ).get(roundId, teamId) as { status: string } | undefined;
+    return row?.status === 'submitted';
+  }
+
+  /**
+   * Compute the authoritative media viewing state for a team.
+   *
+   * The initial free viewing window runs from the round start for
+   * `viewing_duration_seconds`. After it elapses the media is hidden; each paid
+   * replay re-opens a fresh window of the same duration from the replay time.
+   * All timestamps are server-derived so the state survives refresh/reconnect.
+   */
+  static computeCaseMediaState(
+    round: Round,
+    teamId: string,
+    activeCase: Level2Case,
+    isLocked: boolean
+  ): NonNullable<TeamPrivateState['level2']>['media'] {
+    const db = getDb();
+    const durationSec = activeCase.viewing_duration_seconds ?? 0;
+    const nowMs = Date.now();
+    const initialEndsMs = new Date(round.started_at).getTime() + durationSec * 1000;
+
+    const replays = db.prepare(
+      `SELECT created_at FROM media_replays WHERE round_id = ? AND team_id = ? ORDER BY created_at DESC`
+    ).all(round.id, teamId) as { created_at: string }[];
+
+    let viewingEndsMs = initialEndsMs;
+    if (replays.length > 0) {
+      const lastReplayWindowEnd = new Date(replays[0].created_at).getTime() + durationSec * 1000;
+      viewingEndsMs = Math.max(viewingEndsMs, lastReplayWindowEnd);
+    }
+
+    const initialWindowElapsed = nowMs >= initialEndsMs;
+    // Media is never visible once the team has locked in its final answer.
+    const isVisible = !isLocked && nowMs < viewingEndsMs;
+
+    let items: ClientCaseMedia[] = [];
+    if (isVisible) {
+      const rows = db.prepare(
+        `SELECT * FROM case_media WHERE case_id = ? ORDER BY display_order ASC`
+      ).all(activeCase.id) as CaseMedia[];
+      if (rows.length > 0) {
+        items = rows.map((m) => ({
+          id: m.id,
+          media_type: m.media_type,
+          media_path: m.media_path,
+          caption: m.caption,
+          display_order: m.display_order
+        }));
+      } else if (activeCase.media_path) {
+        // Legacy single-asset fallback.
+        items = [{
+          id: `legacy-${activeCase.id}`,
+          media_type: 'image',
+          media_path: activeCase.media_path,
+          caption: null,
+          display_order: 1
+        }];
+      }
+    }
+
+    return {
+      is_visible: isVisible,
+      initial_window_elapsed: initialWindowElapsed,
+      viewing_ends_at: isVisible ? new Date(viewingEndsMs).toISOString() : null,
+      viewing_duration_seconds: durationSec,
+      replay_cost: activeCase.replay_cost ?? 0,
+      replay_count: replays.length,
+      items
+    };
+  }
+
+  /**
+   * Spend credits to replay the case media (TechBrains Round 2).
+   *
+   * Server-authoritative and idempotent: a given operation_id is charged at most
+   * once (UNIQUE(team_id, operation_id) on both media_replays and
+   * credit_transactions), so double-clicks / retries / refreshes never
+   * double-charge. Rejected after the final answer is submitted.
+   */
+  static replayCaseMedia(
+    teamId: string,
+    operationId: string
+  ): {
+    credits_spent: number;
+    remaining_credits: number;
+    replay_count: number;
+    viewing_ends_at: string;
+    already_charged: boolean;
+    already_visible: boolean;
+  } {
+    const db = getDb();
+    const { activeRound } = this.getGameSession();
+
+    if (!activeRound || activeRound.level !== 2 || activeRound.status !== 'active') {
+      throw new Error('Level 2 is not currently active.');
+    }
+    if (isRoundExpired(activeRound)) {
+      throw new Error('Level 2 time limit has expired.');
+    }
+
+    // Enforce the final-answer lock server-side.
+    if (this.isTeamLocked(activeRound.id, teamId)) {
+      throw new Error('Your final answer has been submitted. Replay is no longer available.');
+    }
+
+    const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId) as Team | undefined;
+    if (!team) throw new Error('Team not found.');
+
+    const activeCase = db.prepare('SELECT * FROM level2_cases WHERE is_active = 1 LIMIT 1').get() as Level2Case | undefined;
+    if (!activeCase) throw new Error('No active case found.');
+
+    // Idempotency: if this exact operation was already recorded, return it as-is.
+    const existing = db.prepare(
+      `SELECT * FROM media_replays WHERE team_id = ? AND operation_id = ?`
+    ).get(teamId, operationId) as MediaReplay | undefined;
+    if (existing) {
+      const mediaState = this.computeCaseMediaState(activeRound, teamId, activeCase, false);
+      return {
+        credits_spent: 0,
+        remaining_credits: team.current_credits,
+        replay_count: mediaState.replay_count,
+        viewing_ends_at: mediaState.viewing_ends_at || new Date().toISOString(),
+        already_charged: true,
+        already_visible: false
+      };
+    }
+
+    // If media is currently visible (initial window or an active replay window),
+    // there is no need to charge again.
+    const currentState = this.computeCaseMediaState(activeRound, teamId, activeCase, false);
+    if (currentState.is_visible) {
+      return {
+        credits_spent: 0,
+        remaining_credits: team.current_credits,
+        replay_count: currentState.replay_count,
+        viewing_ends_at: currentState.viewing_ends_at!,
+        already_charged: false,
+        already_visible: true
+      };
+    }
+
+    const cost = activeCase.replay_cost ?? 0;
+    if (team.current_credits < cost) {
+      throw new Error(`Insufficient credits. Replay costs ${cost}, you have ${team.current_credits}.`);
+    }
+
+    const replayId = uuidv4();
+    const txId = uuidv4();
+    const now = new Date().toISOString();
+    const remainingCredits = team.current_credits - cost;
 
     const runTransaction = db.transaction(() => {
-      if (existingEval) {
-        db.prepare(`
-          UPDATE evaluations 
-          SET accuracy_score = ?, reasoning_score = ?, efficiency_score = ?, total_score = ?, feedback = ?, evaluator_id = ?, evaluated_at = ? 
-          WHERE id = ?
-        `).run(accuracyScore, reasoningScore, efficiencyScore, totalScore, feedback, adminUserId, now, existingEval.id);
-      } else {
-        evalId = uuidv4();
-        db.prepare(`
-          INSERT INTO evaluations (
-            id, conclusion_id, accuracy_score, reasoning_score, efficiency_score, total_score, feedback, evaluator_id, evaluated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(evalId, conclusionId, accuracyScore, reasoningScore, efficiencyScore, totalScore, feedback, adminUserId, now);
-      }
+      db.prepare(`UPDATE teams SET current_credits = current_credits - ?, updated_at = ? WHERE id = ?`)
+        .run(cost, now, teamId);
 
-      // Update team's level2_score
       db.prepare(`
-        UPDATE teams 
-        SET level2_score = ?, updated_at = ? 
-        WHERE id = ?
-      `).run(totalScore, now, conclusion.team_id);
-    });
+        INSERT INTO media_replays (id, round_id, team_id, case_id, credits_spent, operation_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(replayId, activeRound.id, teamId, activeCase.id, cost, operationId, now);
 
+      db.prepare(`
+        INSERT INTO credit_transactions (id, round_id, team_id, clue_id, amount, transaction_type, operation_id, created_at)
+        VALUES (?, ?, ?, NULL, ?, 'media_replay', ?, ?)
+      `).run(txId, activeRound.id, teamId, -cost, operationId, now);
+    });
     runTransaction();
 
-    logAuditAction(adminUserId, 'EVALUATE_CONCLUSION', 'evaluations', evalId!, {
-      conclusionId,
-      teamId: conclusion.team_id,
-      totalScore
-    });
-
-    return db.prepare('SELECT * FROM evaluations WHERE id = ?').get(evalId!) as Evaluation;
+    const newState = this.computeCaseMediaState(activeRound, teamId, activeCase, false);
+    return {
+      credits_spent: cost,
+      remaining_credits: remainingCredits,
+      replay_count: newState.replay_count,
+      viewing_ends_at: newState.viewing_ends_at!,
+      already_charged: false,
+      already_visible: false
+    };
   }
 
   /**
@@ -832,11 +1107,15 @@ export class GameService {
       const activeCase = db.prepare('SELECT * FROM level2_cases WHERE is_active = 1 LIMIT 1').get() as Level2Case | undefined;
       let clientClues: ClientClue[] = [];
 
+      const conclusion = db.prepare('SELECT * FROM conclusions WHERE round_id = ? AND team_id = ?').get(activeRound.id, teamId) as Conclusion | undefined;
+      const isLocked = conclusion?.status === 'submitted';
+
       if (activeCase) {
         const allClues = db.prepare('SELECT * FROM clues WHERE case_id = ? AND is_active = 1 ORDER BY display_order ASC').all(activeCase.id) as Clue[];
         const unlocks = db.prepare('SELECT clue_id, unlocked_at FROM clue_unlocks WHERE round_id = ? AND team_id = ?').all(activeRound.id, teamId) as { clue_id: string; unlocked_at: string }[];
         const unlockedMap = new Map(unlocks.map((u) => [u.clue_id, u.unlocked_at]));
 
+        // Clues are TEXT ONLY in TechBrains — no media_path is ever exposed.
         clientClues = allClues.map((c) => {
           const isUnlocked = unlockedMap.has(c.id);
           return {
@@ -846,35 +1125,49 @@ export class GameService {
             display_order: c.display_order,
             is_unlocked: isUnlocked,
             content: isUnlocked ? c.content : undefined, // Never leak locked content
-            media_path: isUnlocked ? c.media_path : undefined,
             unlocked_at: unlockedMap.get(c.id)
           };
         });
       }
 
-      const conclusion = db.prepare('SELECT * FROM conclusions WHERE round_id = ? AND team_id = ?').get(activeRound.id, teamId) as Conclusion | undefined;
-      const evaluation = conclusion ? (db.prepare('SELECT * FROM evaluations WHERE conclusion_id = ?').get(conclusion.id) as Evaluation | undefined) : undefined;
+      const mediaState = activeCase
+        ? this.computeCaseMediaState(activeRound, teamId, activeCase, isLocked)
+        : {
+            is_visible: false,
+            initial_window_elapsed: true,
+            viewing_ends_at: null,
+            viewing_duration_seconds: 0,
+            replay_cost: 0,
+            replay_count: 0,
+            items: []
+          };
+
+      const evalRow = conclusion
+        ? (db.prepare('SELECT * FROM case_evaluations WHERE conclusion_id = ?').get(conclusion.id) as CaseEvaluation | undefined)
+        : undefined;
 
       level2State = {
         case: activeCase ? {
           id: activeCase.id,
           title: activeCase.title,
           situation_description: activeCase.situation_description,
-          media_path: activeCase.media_path,
           initial_credits: activeCase.initial_credits
         } : null,
+        media: mediaState,
         clues: clientClues,
+        is_locked: isLocked,
         conclusion: conclusion ? {
           text: conclusion.conclusion_text,
           status: conclusion.status,
           submitted_at: conclusion.submitted_at
         } : null,
-        evaluation: evaluation ? {
-          accuracy_score: evaluation.accuracy_score,
-          reasoning_score: evaluation.reasoning_score,
-          efficiency_score: evaluation.efficiency_score,
-          total_score: evaluation.total_score,
-          feedback: evaluation.feedback
+        evaluation: evalRow ? {
+          status: evalRow.status,
+          score: evalRow.score,
+          max_score: evalRow.max_score,
+          verdict: evalRow.verdict,
+          reasoning: evalRow.reasoning,
+          is_overridden: evalRow.is_overridden === 1
         } : null
       };
     }

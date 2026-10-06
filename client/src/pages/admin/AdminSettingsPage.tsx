@@ -155,6 +155,22 @@ export const AdminSettingsPage: React.FC = () => {
 
           <div>
             <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
+              Round 2 Maximum Score
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              value={settings.round2MaxScore}
+              onChange={(e) =>
+                setSettings({ ...settings, round2MaxScore: parseInt(e.target.value, 10) })
+              }
+              className="w-full px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
               Tie-Breaker Rule
             </label>
             <select

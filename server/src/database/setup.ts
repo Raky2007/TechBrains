@@ -2,10 +2,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from './db.js';
 import { CONFIG } from '../config.js';
 import { hashPassword } from '../utils/crypto.js';
+import { runMigrations } from './migrate.js';
 
 export async function setupDatabase(): Promise<void> {
   const db = getDb();
   console.log(`[Database] Initialized SQLite at: ${CONFIG.DATABASE_PATH}`);
+
+  // Apply safe, additive column migrations for pre-existing databases.
+  // schema.sql (run above via getDb) already handles new tables/triggers with
+  // IF NOT EXISTS; this covers columns added to tables that already exist.
+  await applyMigrationsSafely(db);
 
   // Check or create admin user
   const existingAdmin = db.prepare('SELECT id, username FROM admin_users WHERE username = ? COLLATE NOCASE').get(CONFIG.ADMIN_USERNAME);
@@ -40,6 +46,33 @@ export async function setupDatabase(): Promise<void> {
   } else {
     console.log(`[Database] Current game session ready: ${(existingSession as any).id}`);
   }
+}
+
+/**
+ * Run additive migrations, taking an automatic backup first when the database
+ * already contains event data and a schema change is actually pending.
+ */
+async function applyMigrationsSafely(db: ReturnType<typeof getDb>): Promise<void> {
+  const caseCols = (db.prepare(`PRAGMA table_info(level2_cases)`).all() as { name: string }[]).map((r) => r.name);
+  const tableExists = caseCols.length > 0;
+  const migrationPending = tableExists && !caseCols.includes('viewing_duration_seconds');
+
+  if (migrationPending) {
+    const hasData =
+      (db.prepare('SELECT COUNT(*) as c FROM teams').get() as any).c > 0 ||
+      (db.prepare('SELECT COUNT(*) as c FROM level2_cases').get() as any).c > 0;
+    if (hasData) {
+      try {
+        const { backupDatabaseAndUploads } = await import('./backup.js');
+        const dir = await backupDatabaseAndUploads();
+        console.log(`[Migrate] Pre-migration safety backup created at: ${dir}`);
+      } catch (err) {
+        console.error('[Migrate] Pre-migration backup failed (continuing):', err);
+      }
+    }
+  }
+
+  runMigrations();
 }
 
 // Allow direct CLI invocation

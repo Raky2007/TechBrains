@@ -7,16 +7,21 @@ export interface ScoreResult {
 }
 
 /**
- * Authoritative scoring rule calculation for Level 1:
- * - Correct AI: +1
- * - Correct Human: +1
- * - Can't Define: 0
- * - Incorrect: 0
+ * Authoritative TechBrains scoring rule for Round 1 (AI or Human):
+ * - Correct AI / Human:  +1
+ * - Wrong AI / Human:    -1
+ * - Can't Determine:      0 (never penalised, never rewarded)
+ * - Timeout / no answer:  0 (no team_answers row is ever created)
+ *
+ * This is deliberately different from the legacy NEXUS rule (which awarded 0
+ * for a wrong answer). Per the TechBrains specification, an explicit negative
+ * penalty discourages guessing on AI/Human.
  */
 export function calculateLevel1Score(
   selectedAnswer: Level1AnswerChoice,
   question: Level1Question
 ): ScoreResult {
+  // "Can't Determine" is always a safe, neutral choice.
   if (selectedAnswer === 'CANT_DEFINE') {
     return {
       isCorrect: question.correct_answer === 'CANT_DEFINE',
@@ -25,7 +30,7 @@ export function calculateLevel1Score(
   }
 
   const isCorrect = selectedAnswer === question.correct_answer;
-  const awardedPoints = isCorrect ? 1 : 0;
+  const awardedPoints = isCorrect ? 1 : -1;
 
   return {
     isCorrect,

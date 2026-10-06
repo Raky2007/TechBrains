@@ -40,39 +40,50 @@ export function requireTeamAuth(req: Request, res: Response, next: NextFunction)
 }
 
 /**
- * Middleware to require administrator authorization.
+ * Read the admin token from an Express request (cookie or Bearer header).
  */
-export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
+export function getAdminTokenFromRequest(req: Request): string | undefined {
   let token = req.cookies?.nexus_admin_token;
   if (!token && req.headers.authorization?.startsWith('Bearer ')) {
     token = req.headers.authorization.substring(7);
   }
+  return typeof token === 'string' ? token : undefined;
+}
 
-  if (!token || typeof token !== 'string') {
-    res.status(401).json({ error: 'Administrator authentication required.' });
-    return;
-  }
-
-  // Token is formatted as userId:signatureHash
+/**
+ * Verify an admin token signature and return the AdminUser, or null if invalid.
+ * This is the single source of truth for admin identity — never treat the mere
+ * presence of a cookie as authorization.
+ */
+export function verifyAdminToken(token?: string): AdminUser | null {
+  if (!token || typeof token !== 'string') return null;
   const parts = token.split(':');
-  if (parts.length !== 2) {
-    res.status(401).json({ error: 'Malformed administrator token.' });
-    return;
-  }
+  if (parts.length !== 2) return null;
 
   const [adminId, signature] = parts;
   const db = getDb();
   const admin = db.prepare('SELECT * FROM admin_users WHERE id = ?').get(adminId) as AdminUser | undefined;
+  if (!admin) return null;
 
-  if (!admin) {
-    res.status(401).json({ error: 'Administrator user not found.' });
+  const expectedSignature = hashToken(admin.id + admin.password_hash);
+  if (signature !== expectedSignature) return null;
+
+  return admin;
+}
+
+/**
+ * Middleware to require administrator authorization.
+ */
+export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
+  const token = getAdminTokenFromRequest(req);
+  if (!token) {
+    res.status(401).json({ error: 'Administrator authentication required.' });
     return;
   }
 
-  // Verify signature against password hash
-  const expectedSignature = hashToken(admin.id + admin.password_hash);
-  if (signature !== expectedSignature) {
-    res.status(401).json({ error: 'Invalid administrator credentials signature.' });
+  const admin = verifyAdminToken(token);
+  if (!admin) {
+    res.status(401).json({ error: 'Invalid or expired administrator credentials.' });
     return;
   }
 

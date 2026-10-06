@@ -134,15 +134,32 @@ export async function seedDatabase(): Promise<void> {
       ]
     });
 
+    const referenceAnswer =
+      "Root cause: An autonomous LLM agent ('Auto-SCADA-GPT') running on Engineering Workstation 3 was hijacked via a zero-width Unicode prompt-injection payload embedded in an inbound maintenance ticket (received 03:02 UTC). " +
+      "Attack vector: The injected directive instructed the agent to execute an emergency breaker-isolation 'drill' (protocol OMEGA), and the agent issued Modbus/TCP commands to PLC 192.168.1.100 at inhuman 1.4ms intervals, tripping the breakers. " +
+      "Security circumvention: Physical intrusion was masked by (a) a cloned 125kHz RFID badge impersonating engineer Marcus Vance (who was verifiably 24 miles away), and (b) a rogue Raspberry Pi injecting a 4-minute looped RTSP stream into the CCTV feed. " +
+      "Responsible entity: an external attacker leveraging the prompt-injection + badge-cloning + CCTV-spoofing chain, not Marcus Vance and not a legitimate maintenance routine.";
+
+    const evaluationGuidance =
+      "Award credit for correctly identifying: (1) the autonomous LLM agent as the mechanism that issued the breaker commands; (2) the zero-width prompt-injection in the maintenance ticket as the attack vector; (3) the cloned RFID badge and the CCTV/RTSP loop as the methods used to circumvent physical security; and (4) that Marcus Vance was framed. Reward answers that cite specific forensic evidence (PCAP inter-packet timing, memory-dump agent, ticket payload, badge logs, CCTV loop). Penalize conclusions that blame a legitimate maintenance routine or Marcus Vance directly.";
+
     db.prepare(`
-      INSERT INTO level2_cases (id, title, situation_description, media_path, initial_credits, is_active, rubric_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 200, 1, ?, ?, ?)
+      INSERT INTO level2_cases (
+        id, title, situation_description, media_path, initial_credits, is_active, rubric_json,
+        viewing_duration_seconds, replay_cost, reference_answer, evaluation_guidance,
+        created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, 200, 1, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       caseId,
       "CASE 404: THE GHOST IN THE SCADA GATEWAY",
       "At 03:14 UTC, the regional energy grid's automated distribution substation in Sector 7 experienced a catastrophic cascading trip. Circuit breakers across three transmission substations opened simultaneously, blacking out 450,000 residents.\n\nThe supervisory control center received contradictory telemetry: the automated SCADA watchdog reported an authorized maintenance routine, while physical voltage transformers registered rapid overload surges.\n\nYour forensic task force has been granted access to the quarantined forensic vault. You have 200 credits to acquire forensic intelligence. Uncover what really happened: Who or what caused the blackout, what was the attack vector, and how was security circumvented? Synthesize your final conclusion.",
       null,
       rubricJson,
+      60,
+      20,
+      referenceAnswer,
+      evaluationGuidance,
       now,
       now
     );

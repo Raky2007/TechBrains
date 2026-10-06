@@ -11,8 +11,7 @@ import {
   XCircle,
   AlertCircle,
   ArrowRight,
-  Loader2,
-  Play
+  Loader2
 } from 'lucide-react';
 
 export const Level1GamePage: React.FC = () => {
@@ -22,7 +21,6 @@ export const Level1GamePage: React.FC = () => {
   const [level1State, setLevel1State] = useState<TeamPrivateState['level1'] | null>(null);
   const [selectedChoice, setSelectedChoice] = useState<Level1AnswerChoice | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [isStartingLevel2, setIsStartingLevel2] = useState<boolean>(false);
   const [submissionFeedback, setSubmissionFeedback] = useState<{
     is_correct: boolean;
     awarded_points: number;
@@ -104,13 +102,7 @@ export const Level1GamePage: React.FC = () => {
       });
 
       await refreshTeam();
-
-      // Automatically advance to next question after 1200ms
-      setTimeout(async () => {
-        setSubmissionFeedback(null);
-        setSelectedChoice(null);
-        await loadProgress();
-      }, 1200);
+      // NOTE: no auto-advance. The participant must deliberately press NEXT.
     } catch (err: any) {
       setError(err.message || 'Failed to submit answer.');
     } finally {
@@ -118,20 +110,11 @@ export const Level1GamePage: React.FC = () => {
     }
   };
 
-  const handleProceedToLevel2 = async () => {
-    setIsStartingLevel2(true);
+  const handleNextQuestion = async () => {
+    setSubmissionFeedback(null);
+    setSelectedChoice(null);
     setError(null);
-    try {
-      await apiFetch('/api/game/start-level', {
-        method: 'POST',
-        body: JSON.stringify({ level: 2 })
-      });
-      await refreshGameState();
-      navigate('/level2');
-    } catch (err: any) {
-      setError(err.message || 'Failed to start Level 2.');
-      setIsStartingLevel2(false);
-    }
+    await loadProgress();
   };
 
   if (isLoading) {
@@ -159,7 +142,7 @@ export const Level1GamePage: React.FC = () => {
             AI vs Human Discrimination Concluded
           </h1>
           <p className="text-xs sm:text-sm text-[#737373] max-w-md mx-auto leading-relaxed">
-            Your responses have been recorded and scored. You may now proceed directly to Phase 2: Clues with Credits.
+            Your responses have been recorded and scored. Please wait — the host will start Round 2 when all teams are ready.
           </p>
         </div>
 
@@ -186,23 +169,10 @@ export const Level1GamePage: React.FC = () => {
           >
             &larr; Waiting Room
           </button>
-          <button
-            onClick={handleProceedToLevel2}
-            disabled={isStartingLevel2}
-            className="w-full sm:w-auto px-6 py-3 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all flex items-center justify-center gap-2 shadow-xs cursor-pointer"
-          >
-            {isStartingLevel2 ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin text-[#171717]" />
-                <span>OPENING LEVEL 2...</span>
-              </>
-            ) : (
-              <>
-                <span>PROCEED TO LEVEL 2: CLUES & CREDITS</span>
-                <ArrowRight className="w-4 h-4" />
-              </>
-            )}
-          </button>
+          <div className="w-full sm:w-auto px-6 py-3 rounded-xl font-mono text-xs tracking-wider uppercase text-[#737373] bg-[#F5F5F2] border border-[#E5E5E5] flex items-center justify-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-[#737373]" />
+            <span>Waiting for host to start Round 2</span>
+          </div>
         </div>
       </div>
     );
@@ -360,37 +330,43 @@ export const Level1GamePage: React.FC = () => {
             </div>
           )}
 
-          {/* Submission Feedback */}
-          {submissionFeedback && (
-            <div
-              className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                submissionFeedback.is_correct
-                  ? 'bg-[#18794E]/5 border-[#18794E]/20 text-[#18794E]'
-                  : 'bg-[#F5F5F2] border-[#E5E5E5] text-[#171717]'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                {submissionFeedback.is_correct ? (
-                  <CheckCircle2 className="w-5 h-5 text-[#18794E] shrink-0" />
-                ) : (
-                  <XCircle className="w-5 h-5 text-[#B42318] shrink-0" />
-                )}
-                <div>
-                  <div className="font-heading font-bold text-sm text-[#171717]">
-                    {submissionFeedback.is_correct ? 'Correct Verdict' : 'Verdict Recorded'}
-                  </div>
-                  {submissionFeedback.explanation && (
-                    <p className="text-xs text-[#737373] mt-0.5 font-body">
-                      {submissionFeedback.explanation}
-                    </p>
+          {/* Submission Feedback (persistent until the participant presses NEXT) */}
+          {submissionFeedback && (() => {
+            const pts = submissionFeedback.awarded_points;
+            const positive = pts > 0;
+            const negative = pts < 0;
+            const label = positive ? 'Correct' : negative ? 'Incorrect' : 'Answer Recorded';
+            const ptsText = `${pts > 0 ? '+' : ''}${pts} PT`;
+            const ptsColor = positive ? 'text-[#18794E]' : negative ? 'text-[#B42318]' : 'text-[#737373]';
+            return (
+              <div
+                className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                  positive
+                    ? 'bg-[#18794E]/5 border-[#18794E]/20'
+                    : negative
+                    ? 'bg-[#B42318]/5 border-[#B42318]/20'
+                    : 'bg-[#F5F5F2] border-[#E5E5E5]'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  {positive ? (
+                    <CheckCircle2 className="w-5 h-5 text-[#18794E] shrink-0" />
+                  ) : negative ? (
+                    <XCircle className="w-5 h-5 text-[#B42318] shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-[#737373] shrink-0" />
                   )}
+                  <div>
+                    <div className="font-heading font-bold text-sm text-[#171717]">{label}</div>
+                    {submissionFeedback.explanation && (
+                      <p className="text-xs text-[#737373] mt-0.5 font-body">{submissionFeedback.explanation}</p>
+                    )}
+                  </div>
                 </div>
+                <div className={`font-mono text-sm font-bold shrink-0 ${ptsColor}`}>{ptsText}</div>
               </div>
-              <div className="font-mono text-sm font-bold text-[#171717] shrink-0">
-                +{submissionFeedback.awarded_points} PT
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Action Footer: Primary CTA #FFC928 */}
           <div className="pt-4 border-t border-[#E5E5E5] flex items-center justify-between">
@@ -398,24 +374,35 @@ export const Level1GamePage: React.FC = () => {
               Keyboard shortcuts: [A/1], [B/2], [C/3]
             </span>
 
-            <button
-              type="button"
-              disabled={!selectedChoice || isSubmitting || !!submissionFeedback}
-              onClick={handleSubmitAnswer}
-              className="w-full sm:w-auto px-7 py-3 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-xs ml-auto cursor-pointer"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin text-[#171717]" />
-                  <span>RECORDING...</span>
-                </>
-              ) : (
-                <>
-                  <span>SUBMIT VERDICT</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
-            </button>
+            {submissionFeedback ? (
+              <button
+                type="button"
+                onClick={handleNextQuestion}
+                className="w-full sm:w-auto px-7 py-3 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all flex items-center justify-center gap-2 shadow-xs ml-auto cursor-pointer"
+              >
+                <span>NEXT QUESTION</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!selectedChoice || isSubmitting}
+                onClick={handleSubmitAnswer}
+                className="w-full sm:w-auto px-7 py-3 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-xs ml-auto cursor-pointer"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-[#171717]" />
+                    <span>RECORDING...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>SUBMIT ANSWER</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
       )}

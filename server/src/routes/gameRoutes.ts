@@ -1,10 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { GameService } from '../services/gameService.js';
-import { requireTeamAuth } from '../middleware/auth.js';
+import { requireTeamAuth, getAdminTokenFromRequest, verifyAdminToken } from '../middleware/auth.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
 import {
   level1AnswerSchema,
   level2UnlockClueSchema,
+  level2ReplaySchema,
   level2SubmitConclusionSchema
 } from '@nexus/shared';
 import { emitToAdmin, emitToTeam, broadcastGameState, broadcastRoundEvent } from '../sockets/socketHandler.js';
@@ -37,20 +38,9 @@ router.get('/team-state', requireTeamAuth, (req: Request, res: Response): void =
   }
 });
 
-/**
- * Start level directly from participant UI without requiring admin intervention
- * Route: POST /api/game/start-level
- */
-router.post('/start-level', requireTeamAuth, (req: Request, res: Response): void => {
-  try {
-    const level = req.body.level === 2 ? 2 : 1;
-    const result = GameService.participantStartLevel(req.team!.id, level);
-    broadcastRoundEvent('round:started', { level, round: result.round });
-    res.json({ success: true, round: result.round, session: result.session });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Failed to start round.' });
-  }
-});
+// NOTE: The participant "start-level" route has been removed. Global round
+// transitions (start/pause/resume/end/complete) are admin-only and live under
+// /api/admin/controls. Participants react to server-controlled state only.
 
 /**
  * Submit Level 1 Answer
@@ -110,13 +100,15 @@ router.post('/level2/unlock-clue', requireTeamAuth, rateLimiter(5000, 20, 'Purch
       remaining_credits: result.remaining_credits
     });
 
+    // Push fresh private state to the team's own devices (multi-device sync).
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
     res.json({
       success: true,
       clue: {
         id: result.clue.id,
         title: result.clue.title,
         content: result.clue.content,
-        media_path: result.clue.media_path,
         credit_cost: result.clue.credit_cost,
         display_order: result.clue.display_order,
         is_unlocked: true
@@ -127,6 +119,52 @@ router.post('/level2/unlock-clue', requireTeamAuth, rateLimiter(5000, 20, 'Purch
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to unlock clue.' });
+  }
+});
+
+/**
+ * Replay Level 2 case media for credits (TechBrains)
+ * Route: POST /api/game/level2/replay
+ */
+router.post('/level2/replay', requireTeamAuth, rateLimiter(5000, 20, 'Replaying too rapidly'), (req: Request, res: Response): void => {
+  try {
+    const parseResult = level2ReplaySchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid replay request.' });
+      return;
+    }
+
+    const result = GameService.replayCaseMedia(req.team!.id, parseResult.data.operation_id);
+
+    // Notify admin dashboard of credit movement + replay activity.
+    if (result.credits_spent > 0) {
+      emitToAdmin('team:credits_updated', {
+        team_id: req.team!.id,
+        team_name: req.team!.team_name,
+        credits_spent: result.credits_spent,
+        remaining_credits: result.remaining_credits
+      });
+      emitToAdmin('team:replay', {
+        team_id: req.team!.id,
+        team_name: req.team!.team_name,
+        replay_count: result.replay_count
+      });
+    }
+
+    // Push fresh private state to the team's own devices (multi-device sync).
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    res.json({
+      success: true,
+      credits_spent: result.credits_spent,
+      remaining_credits: result.remaining_credits,
+      replay_count: result.replay_count,
+      viewing_ends_at: result.viewing_ends_at,
+      already_charged: result.already_charged,
+      already_visible: result.already_visible
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to replay case media.' });
   }
 });
 
@@ -153,6 +191,12 @@ router.post('/level2/conclusion', requireTeamAuth, (req: Request, res: Response)
       submitted_at: conclusion.submitted_at
     });
 
+    // Trigger automatic AI evaluation (non-blocking; only if a provider is set).
+    GameService.autoEvaluate(conclusion.id);
+
+    // Push fresh locked private state to the team's own devices.
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
     res.json({
       success: true,
       message: 'Conclusion submitted for forensic evaluation.',
@@ -174,10 +218,10 @@ router.post('/level2/conclusion', requireTeamAuth, (req: Request, res: Response)
 router.get('/leaderboard', (req: Request, res: Response): void => {
   try {
     const { settings } = GameService.getGameSession();
-    // Allow viewing if published or if admin cookie is present
-    const hasAdminCookie = !!req.cookies?.nexus_admin_token;
+    // Allow early viewing ONLY for a verified admin — never on cookie presence.
+    const isVerifiedAdmin = !!verifyAdminToken(getAdminTokenFromRequest(req));
 
-    if (!settings.resultsPublished && !hasAdminCookie) {
+    if (!settings.resultsPublished && !isVerifiedAdmin) {
       res.json({
         is_published: false,
         message: 'Final results have not been published by event officials yet.',

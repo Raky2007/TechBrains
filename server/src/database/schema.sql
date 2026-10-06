@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS level2_cases (
     initial_credits INTEGER NOT NULL DEFAULT 200,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     rubric_json TEXT NOT NULL,
+    -- TechBrains: Round 2 media lifecycle + AI evaluation configuration
+    viewing_duration_seconds INTEGER NOT NULL DEFAULT 60,
+    replay_cost INTEGER NOT NULL DEFAULT 20,
+    reference_answer TEXT,
+    evaluation_guidance TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -166,7 +171,68 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TEXT NOT NULL
 );
 
+-- ============================================================
+-- TechBrains additions: case media, media replays, AI evaluation
+-- ============================================================
+
+-- Multiple media assets per case (image / video / audio).
+-- The legacy level2_cases.media_path remains as a single-asset fallback.
+CREATE TABLE IF NOT EXISTS case_media (
+    id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES level2_cases(id) ON DELETE CASCADE,
+    media_type TEXT NOT NULL CHECK(media_type IN ('image', 'video', 'audio')),
+    media_path TEXT NOT NULL,
+    caption TEXT,
+    display_order INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+-- Server-authoritative, idempotent record of every paid media replay.
+CREATE TABLE IF NOT EXISTS media_replays (
+    id TEXT PRIMARY KEY,
+    round_id TEXT NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    case_id TEXT NOT NULL REFERENCES level2_cases(id) ON DELETE CASCADE,
+    credits_spent INTEGER NOT NULL,
+    operation_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(team_id, operation_id)
+);
+
+-- TechBrains AI evaluation of the final answer, with manual-override support.
+-- Replaces the legacy manual-rubric `evaluations` table (kept for data safety).
+CREATE TABLE IF NOT EXISTS case_evaluations (
+    id TEXT PRIMARY KEY,
+    conclusion_id TEXT NOT NULL UNIQUE REFERENCES conclusions(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'completed', 'failed')),
+    score REAL,
+    max_score REAL NOT NULL DEFAULT 20,
+    verdict TEXT,
+    reasoning TEXT,
+    provider TEXT,
+    model TEXT,
+    source TEXT NOT NULL DEFAULT 'ai' CHECK(source IN ('ai', 'manual')),
+    is_overridden INTEGER NOT NULL DEFAULT 0 CHECK(is_overridden IN (0, 1)),
+    error_message TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    evaluator_id TEXT REFERENCES admin_users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Final-answer immutability guard (defense-in-depth below the service layer):
+-- once a conclusion row is 'submitted' it can never be updated again.
+CREATE TRIGGER IF NOT EXISTS trg_conclusions_immutable_after_submit
+BEFORE UPDATE ON conclusions
+FOR EACH ROW WHEN OLD.status = 'submitted'
+BEGIN
+    SELECT RAISE(ABORT, 'IMMUTABLE_CONCLUSION: final answer cannot be modified after submission');
+END;
+
 -- Optimization indexes
+CREATE INDEX IF NOT EXISTS idx_case_media_case ON case_media(case_id);
+CREATE INDEX IF NOT EXISTS idx_media_replays_round_team ON media_replays(round_id, team_id);
+CREATE INDEX IF NOT EXISTS idx_case_evaluations_conclusion ON case_evaluations(conclusion_id);
 CREATE INDEX IF NOT EXISTS idx_teams_session ON teams(game_session_id);
 CREATE INDEX IF NOT EXISTS idx_assignments_round_team ON team_question_assignments(round_id, team_id);
 CREATE INDEX IF NOT EXISTS idx_answers_round_team ON team_answers(round_id, team_id);

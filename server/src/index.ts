@@ -54,6 +54,15 @@ async function startServer() {
   // 5. Recover ongoing rounds if server was rebooted
   recoverRoundsOnStartup();
 
+  // Security: warn loudly if running in production with the built-in default password.
+  if (CONFIG.NODE_ENV === 'production' && CONFIG.ADMIN_PASSWORD === 'nexus_forensics_2026!') {
+    console.warn('\n[SECURITY WARNING] Running in production with the default ADMIN_PASSWORD.');
+    console.warn('[SECURITY WARNING] Set a strong ADMIN_PASSWORD in your .env before the event.\n');
+  }
+  if (CONFIG.AI.PROVIDER !== 'none' && CONFIG.AI.PROVIDER !== 'mock' && !CONFIG.AI.API_KEY) {
+    console.warn(`[AI] AI_PROVIDER="${CONFIG.AI.PROVIDER}" is set but AI_API_KEY is empty; evaluations will fail until a key is provided.`);
+  }
+
   // 6. Middleware stack
   app.use(cors({
     origin: true,

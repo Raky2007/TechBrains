@@ -24,11 +24,26 @@ export const CONFIG = {
   PUBLIC_DIR: path.resolve(__dirname, '../public'),
   
   MAX_UPLOAD_SIZE_BYTES: (parseInt(process.env.MAX_UPLOAD_SIZE_MB || '25', 10)) * 1024 * 1024,
-  
+
+  // AI evaluation provider configuration (server-side only; keys never reach the client).
+  // AI_PROVIDER: 'none' | 'mock' | 'anthropic' | 'openai'
+  //  - 'none'  : no automatic evaluation; admins evaluate/override manually.
+  //  - 'mock'  : deterministic offline heuristic (great for LAN demos & tests).
+  //  - 'anthropic' / 'openai' : call the hosted provider over HTTPS.
+  AI: {
+    PROVIDER: (process.env.AI_PROVIDER || 'none').toLowerCase(),
+    API_KEY: process.env.AI_API_KEY || '',
+    MODEL: process.env.AI_MODEL || 'claude-sonnet-5-5',
+    BASE_URL: process.env.AI_BASE_URL || '',
+    TIMEOUT_MS: parseInt(process.env.AI_TIMEOUT_MS || '30000', 10),
+    MAX_RETRIES: parseInt(process.env.AI_MAX_RETRIES || '1', 10)
+  },
+
   DEFAULT_SETTINGS: {
     level1DurationMinutes: parseInt(process.env.LEVEL1_DURATION_MINUTES || '10', 10),
     level2DurationMinutes: parseInt(process.env.LEVEL2_DURATION_MINUTES || '20', 10),
     initialCredits: parseInt(process.env.INITIAL_CREDITS || '200', 10),
+    round2MaxScore: parseInt(process.env.ROUND2_MAX_SCORE || '20', 10),
     resultsPublished: false,
     tieBreakerRule: 'default' as const,
     randomizeQuestionOrder: true
