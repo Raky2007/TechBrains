@@ -343,7 +343,33 @@ export interface PublicGameState {
   server_time: string;
 }
 
+/**
+ * Server-authoritative, TEAM-SPECIFIC navigation stage.
+ *
+ * This is the single source of truth for "where should THIS team be right now",
+ * combining the global event state with the team's own progress/eligibility.
+ * The participant UI navigates ONLY by this value — never by raw global status —
+ * so one team's progress can never move another team.
+ *
+ * - waiting:      event not started (or pre-Round-1) for this team
+ * - round1:       this team is actively playing Round 1
+ * - round1_done:  this team finished Round 1 (or Round 1 ended) — show its own
+ *                 completion screen and wait; other teams are unaffected
+ * - round2:       Round 2 is globally active AND this team qualified
+ * - not_qualified:Round 2 is globally active but this team did NOT qualify
+ * - result:       event completed / results published — show this team's result
+ */
+export type TeamStage =
+  | 'waiting'
+  | 'round1'
+  | 'round1_done'
+  | 'round2'
+  | 'not_qualified'
+  | 'result';
+
 export interface TeamPrivateState {
+  /** Where this specific team should be (never derived from another team). */
+  stage: TeamStage;
   team: {
     id: string;
     team_name: string;

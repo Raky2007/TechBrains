@@ -19,7 +19,8 @@ import {
   Conclusion,
   Level1AnswerChoice,
   PublicGameState,
-  TeamPrivateState
+  TeamPrivateState,
+  TeamStage
 } from '@nexus/shared';
 import { calculateLevel1Score, calculateAuthoritativeLeaderboard } from './scoringService.js';
 import { isRoundExpired, getAuthoritativeTimerState } from './timerService.js';
@@ -1258,7 +1259,19 @@ export class GameService {
       };
     }
 
+    // Compute this TEAM's own navigation stage (server-authoritative). This is
+    // derived only from the global event status + THIS team's own progress and
+    // eligibility — never from any other team. Returned so the client can
+    // navigate by the team's own stage instead of raw global status.
+    const stage = this.computeTeamStage({
+      status: session.status,
+      resultsPublished: liveSettings.resultsPublished,
+      teamCompletedRound1: level1State ? level1State.is_completed : false,
+      qualified: round2Qualified
+    });
+
     return {
+      stage,
       team: {
         id: team.id,
         team_name: team.team_name,
@@ -1271,6 +1284,42 @@ export class GameService {
       round1_cutoff: liveSettings.round1CutoffScore,
       level2: level2State
     };
+  }
+
+  /**
+   * Pure, team-specific stage resolver. Given the GLOBAL event status and THIS
+   * team's own completion/qualification, decide where the team belongs. No
+   * other team's state is consulted, so this can never cross-contaminate.
+   */
+  private static computeTeamStage(args: {
+    status: GameSession['status'];
+    resultsPublished: boolean;
+    teamCompletedRound1: boolean;
+    qualified: boolean | undefined;
+  }): TeamStage {
+    const { status, resultsPublished, teamCompletedRound1, qualified } = args;
+
+    if (status === 'completed' || resultsPublished) return 'result';
+    if (status === 'idle') return 'waiting';
+
+    if (status === 'level1_active' || status === 'level1_paused') {
+      // Only teams that have finished their OWN Round 1 see the done/celebration
+      // stage; everyone else keeps playing Round 1 independently.
+      return teamCompletedRound1 ? 'round1_done' : 'round1';
+    }
+
+    // Round 1 has ended globally: every team's Round 1 is finalized. Teams wait
+    // (on their own completion screen) until the admin starts Round 2.
+    if (status === 'level1_ended') return 'round1_done';
+
+    if (status === 'level2_active' || status === 'level2_paused' || status === 'level2_ended') {
+      // Round 2 can only start after Round 1 ended globally, so scores are final.
+      // Entry is strictly per-team: qualified teams play Round 2; others are
+      // held on a not-qualified screen (and the server rejects their R2 calls).
+      return qualified ? 'round2' : 'not_qualified';
+    }
+
+    return 'waiting';
   }
 
   /**

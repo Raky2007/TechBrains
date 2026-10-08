@@ -158,8 +158,12 @@ export const Level1GamePage: React.FC = () => {
           <CheckCircle2 className="w-7 h-7" />
         </div>
         <div className="space-y-2">
-          <span className="text-xs font-mono uppercase tracking-widest text-[#737373] font-bold">ROUND 1 COMPLETE</span>
-          <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#171717]">All questions answered</h1>
+          <span className="text-xs font-mono uppercase tracking-widest text-[#737373] font-bold">
+            {isCompleted ? 'ROUND 1 COMPLETE' : 'ROUND 1 ENDED'}
+          </span>
+          <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#171717]">
+            {isCompleted ? 'All questions answered' : 'Round 1 has ended'}
+          </h1>
           <p className="text-xs sm:text-sm text-[#737373] max-w-md mx-auto leading-relaxed">
             Your responses are recorded. Please wait — the host will start Round 2 for qualified teams.
           </p>

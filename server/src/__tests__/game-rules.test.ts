@@ -727,6 +727,148 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
     expect(state.level2?.clues.length).toBeGreaterThan(0);
   });
 
+  // ================= TEAM-STATE ISOLATION (the P0 LAN concurrency bug) =================
+
+  function answerAllForTeam(teamId: string, answer: 'AI' | 'HUMAN' | 'CANT_DEFINE' = 'AI') {
+    const roundId = latestL1RoundId();
+    const qs = getDb()
+      .prepare('SELECT question_id FROM team_question_assignments WHERE round_id = ? AND team_id = ? ORDER BY question_order ASC')
+      .all(roundId, teamId) as { question_id: string }[];
+    for (const q of qs) GameService.submitLevel1Answer(teamId, q.question_id, answer);
+    return qs.length;
+  }
+
+  it('ISO-1. One team completing Round 1 does NOT change any other team', () => {
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    const { team: A } = GameService.registerTeam('Iso A');
+    const { team: B } = GameService.registerTeam('Iso B');
+    const { team: C } = GameService.registerTeam('Iso C');
+    const { team: D } = GameService.registerTeam('Iso D');
+    GameService.startRound(admin.id, 1);
+
+    // B answers 3, C answers 6, D answers 0, then A answers everything.
+    const roundId = latestL1RoundId();
+    const take = (teamId: string, n: number) => {
+      const qs = getDb()
+        .prepare('SELECT question_id FROM team_question_assignments WHERE round_id = ? AND team_id = ? ORDER BY question_order ASC')
+        .all(roundId, teamId) as { question_id: string }[];
+      for (let i = 0; i < n; i++) GameService.submitLevel1Answer(teamId, qs[i].question_id, 'AI');
+    };
+    take(B.id, 3);
+    take(C.id, 6);
+    const total = answerAllForTeam(A.id);
+
+    // A is done; everyone else is exactly where they left off — independently.
+    const sA = GameService.getTeamPrivateState(A.id);
+    const sB = GameService.getTeamPrivateState(B.id);
+    const sC = GameService.getTeamPrivateState(C.id);
+    const sD = GameService.getTeamPrivateState(D.id);
+
+    expect(sA.stage).toBe('round1_done');
+    expect(sA.level1?.is_completed).toBe(true);
+    expect(sA.level1?.answered_count).toBe(total);
+
+    expect(sB.stage).toBe('round1');
+    expect(sB.level1?.is_completed).toBe(false);
+    expect(sB.level1?.answered_count).toBe(3);
+    expect(sB.level1?.current_question?.question_order).toBe(4);
+
+    expect(sC.stage).toBe('round1');
+    expect(sC.level1?.answered_count).toBe(6);
+    expect(sC.level1?.current_question?.question_order).toBe(7);
+
+    expect(sD.stage).toBe('round1');
+    expect(sD.level1?.answered_count).toBe(0);
+    expect(sD.level1?.current_question?.question_order).toBe(1);
+  });
+
+  it('ISO-2. Round 2 start moves ONLY qualified teams into round2; others are held', () => {
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    GameService.updateSettings(admin.id, { round1CutoffScore: 5 });
+    const { team: A } = GameService.registerTeam('Q A'); // will score high
+    const { team: B } = GameService.registerTeam('Q B'); // will score 0
+    GameService.startRound(admin.id, 1);
+
+    // A answers every question with the correct answer to clear the cutoff.
+    const roundId = latestL1RoundId();
+    const aqs = getDb()
+      .prepare('SELECT tqa.question_id, q.correct_answer FROM team_question_assignments tqa JOIN level1_questions q ON q.id = tqa.question_id WHERE tqa.round_id = ? AND tqa.team_id = ? ORDER BY tqa.question_order ASC')
+      .all(roundId, A.id) as { question_id: string; correct_answer: 'AI' | 'HUMAN' | 'CANT_DEFINE' }[];
+    for (const q of aqs) GameService.submitLevel1Answer(A.id, q.question_id, q.correct_answer);
+
+    GameService.endRound(admin.id, 1);
+    GameService.startRound(admin.id, 2);
+
+    const sA = GameService.getTeamPrivateState(A.id);
+    const sB = GameService.getTeamPrivateState(B.id);
+    expect(sA.round2_qualified).toBe(true);
+    expect(sA.stage).toBe('round2');
+    expect(sA.level2).toBeDefined();
+
+    expect(sB.round2_qualified).toBe(false);
+    expect(sB.stage).toBe('not_qualified');
+    expect(sB.level2).toBeUndefined();
+  });
+
+  it('ISO-3. 30+ concurrent teams progress independently with zero cross-contamination', () => {
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    const N = 32;
+    const teams = Array.from({ length: N }).map((_, i) => GameService.registerTeam(`Scale ${i}`).team);
+    GameService.startRound(admin.id, 1);
+
+    // Baseline: every team is at question 1 with score 0.
+    for (const t of teams) {
+      const s = GameService.getTeamPrivateState(t.id);
+      expect(s.stage).toBe('round1');
+      expect(s.level1?.answered_count).toBe(0);
+    }
+
+    // Exactly ONE team (index 0) completes Round 1.
+    const total = answerAllForTeam(teams[0].id);
+
+    // The completing team is done; all other 31 teams are untouched.
+    const s0 = GameService.getTeamPrivateState(teams[0].id);
+    expect(s0.stage).toBe('round1_done');
+    expect(s0.level1?.answered_count).toBe(total);
+
+    for (let i = 1; i < N; i++) {
+      const s = GameService.getTeamPrivateState(teams[i].id);
+      expect(s.stage).toBe('round1'); // NOT round1_done / round2
+      expect(s.level1?.is_completed).toBe(false);
+      expect(s.level1?.answered_count).toBe(0);
+      expect(s.level1?.current_question?.question_order).toBe(1);
+      const score = (getDb().prepare('SELECT level1_score FROM teams WHERE id = ?').get(teams[i].id) as any).level1_score;
+      expect(score).toBe(0);
+    }
+
+    // And the DB rows are strictly partitioned by team (no shared answers).
+    const answerTeams = getDb().prepare('SELECT DISTINCT team_id FROM team_answers').all() as { team_id: string }[];
+    expect(answerTeams.length).toBe(1);
+    expect(answerTeams[0].team_id).toBe(teams[0].id);
+  });
+
+  it('ISO-4. Reconnect/refresh recovers a team\'s own state from the server, unchanged by others', () => {
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    const { team: A } = GameService.registerTeam('Recon A');
+    const { team: B, token: tokenB } = GameService.registerTeam('Recon B');
+    GameService.startRound(admin.id, 1);
+
+    // B answers 2 questions, then A completes everything.
+    const roundId = latestL1RoundId();
+    const bqs = getDb().prepare('SELECT question_id FROM team_question_assignments WHERE round_id = ? AND team_id = ? ORDER BY question_order ASC').all(roundId, B.id) as { question_id: string }[];
+    GameService.submitLevel1Answer(B.id, bqs[0].question_id, 'AI');
+    GameService.submitLevel1Answer(B.id, bqs[1].question_id, 'AI');
+    answerAllForTeam(A.id);
+
+    // B "reconnects": re-authenticate by its token and re-read server state.
+    const reconnected = GameService.authenticateTeam(tokenB);
+    expect(reconnected?.id).toBe(B.id);
+    const sB = GameService.getTeamPrivateState(B.id);
+    expect(sB.stage).toBe('round1');
+    expect(sB.level1?.answered_count).toBe(2);
+    expect(sB.level1?.current_question?.question_order).toBe(3);
+  });
+
   it('13. Startup recovery cleans up expired rounds', () => {
     const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
     const { round } = GameService.startRound(admin.id, 1);
