@@ -10,7 +10,7 @@ import { JoinPage } from './pages/JoinPage';
 import { WaitingRoomPage } from './pages/WaitingRoomPage';
 import { Level1GamePage } from './pages/Level1GamePage';
 import { Level2GamePage } from './pages/Level2GamePage';
-import { LeaderboardPage } from './pages/LeaderboardPage';
+import { MyResultPage } from './pages/MyResultPage';
 
 // Admin Pages
 import { AdminLoginPage } from './pages/admin/AdminLoginPage';
@@ -18,6 +18,8 @@ import { AdminOverviewPage } from './pages/admin/AdminOverviewPage';
 import { AdminControlPage } from './pages/admin/AdminControlPage';
 import { AdminQuestionsPage } from './pages/admin/AdminQuestionsPage';
 import { AdminCasesPage } from './pages/admin/AdminCasesPage';
+import { Round1SettingsPage } from './pages/admin/Round1SettingsPage';
+import { Round2SettingsPage } from './pages/admin/Round2SettingsPage';
 import { AdminTeamsPage } from './pages/admin/AdminTeamsPage';
 import { AdminSubmissionsPage } from './pages/admin/AdminSubmissionsPage';
 import { AdminLeaderboardPage } from './pages/admin/AdminLeaderboardPage';
@@ -35,7 +37,8 @@ export const App: React.FC = () => {
           <Route path="/waiting" element={<WaitingRoomPage />} />
           <Route path="/level1" element={<Level1GamePage />} />
           <Route path="/level2" element={<Level2GamePage />} />
-          <Route path="/leaderboard" element={<LeaderboardPage />} />
+          <Route path="/result" element={<MyResultPage />} />
+          <Route path="/leaderboard" element={<Navigate to="/result" replace />} />
         </Route>
 
         {/* Admin Login */}
@@ -45,6 +48,8 @@ export const App: React.FC = () => {
         <Route path="/admin" element={<AdminLayout />}>
           <Route index element={<AdminOverviewPage />} />
           <Route path="control" element={<AdminControlPage />} />
+          <Route path="round1" element={<Round1SettingsPage />} />
+          <Route path="round2" element={<Round2SettingsPage />} />
           <Route path="questions" element={<AdminQuestionsPage />} />
           <Route path="cases" element={<AdminCasesPage />} />
           <Route path="teams" element={<AdminTeamsPage />} />

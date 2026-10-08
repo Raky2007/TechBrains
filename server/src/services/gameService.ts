@@ -161,12 +161,29 @@ export class GameService {
       }
     }
 
-    const durationMinutes = level === 1 ? settings.level1DurationMinutes : settings.level2DurationMinutes;
     const nowMs = Date.now();
     const startedAt = new Date(nowMs).toISOString();
-    const deadlineAt = new Date(nowMs + durationMinutes * 60 * 1000).toISOString();
+
+    // TechBrains Round 1 has NO separate overall timer: its total duration is
+    // the sum of each active question's individual timer. We still store a
+    // round deadline as a generous backstop (sum of timers + buffer) so the
+    // existing authoritative ticker / startup-recovery can finalize an
+    // abandoned round, but participant timing is governed per-question.
+    // Round 2 keeps its configured overall duration.
+    let totalSeconds: number;
+    if (level === 1) {
+      const sumRow = db
+        .prepare('SELECT COALESCE(SUM(time_limit_seconds), 0) as total FROM level1_questions WHERE is_active = 1')
+        .get() as { total: number };
+      // +60s buffer absorbs per-question serve latency and inter-question gaps.
+      totalSeconds = Math.max(60, sumRow.total + 60);
+    } else {
+      totalSeconds = settings.level2DurationMinutes * 60;
+    }
+
+    const deadlineAt = new Date(nowMs + totalSeconds * 1000).toISOString();
     const roundId = uuidv4();
-    const remainingSeconds = durationMinutes * 60;
+    const remainingSeconds = totalSeconds;
     const snapshotJson = JSON.stringify(settings);
 
     const runTransaction = db.transaction(() => {
@@ -218,7 +235,7 @@ export class GameService {
     const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId) as Round;
     const updatedSession = db.prepare('SELECT * FROM game_sessions WHERE id = ?').get(session.id) as GameSession;
 
-    logAuditAction(adminUserId, `START_LEVEL_${level}`, 'rounds', roundId, { startedAt, deadlineAt, durationMinutes });
+    logAuditAction(adminUserId, `START_LEVEL_${level}`, 'rounds', roundId, { startedAt, deadlineAt, totalSeconds });
 
     return { round, session: updatedSession };
   }
@@ -462,6 +479,7 @@ export class GameService {
     is_correct: boolean;
     awarded_points: number;
     explanation: string | null;
+    correct_answer: Level1AnswerChoice;
     new_team_score: number;
   } {
     const db = getDb();
@@ -477,9 +495,9 @@ export class GameService {
 
     // Verify question is assigned to this team
     const assignment = db.prepare(`
-      SELECT * FROM team_question_assignments 
+      SELECT * FROM team_question_assignments
       WHERE round_id = ? AND team_id = ? AND question_id = ?
-    `).get(activeRound.id, teamId, questionId);
+    `).get(activeRound.id, teamId, questionId) as { id: string; served_at: string | null; deadline_at: string | null } | undefined;
 
     if (!assignment) {
       throw new Error('This question is not assigned to your team.');
@@ -487,12 +505,32 @@ export class GameService {
 
     // Check for duplicate submission
     const existingAnswer = db.prepare(`
-      SELECT * FROM team_answers 
+      SELECT * FROM team_answers
       WHERE round_id = ? AND team_id = ? AND question_id = ?
     `).get(activeRound.id, teamId, questionId);
 
     if (existingAnswer) {
       throw new Error('You have already submitted an answer for this question.');
+    }
+
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+
+    // Per-question server-authoritative timeout. If the question was already
+    // served and its deadline has passed, it is a timeout (0 points, no row)
+    // and can never be answered afterward. If it was never served (e.g. a
+    // very fast client that submits before fetching state), serve it now so a
+    // legitimate first answer is accepted.
+    if (assignment.served_at && assignment.deadline_at) {
+      if (nowMs > new Date(assignment.deadline_at).getTime()) {
+        throw new Error('Time is up for this question. It has timed out and can no longer be answered.');
+      }
+    } else {
+      // Retrieve the per-question timer to establish the deadline on first touch.
+      const q = db.prepare('SELECT time_limit_seconds FROM level1_questions WHERE id = ?').get(questionId) as { time_limit_seconds: number } | undefined;
+      const limit = q?.time_limit_seconds ?? 30;
+      const deadlineIso = new Date(nowMs + limit * 1000).toISOString();
+      db.prepare('UPDATE team_question_assignments SET served_at = ?, deadline_at = ? WHERE id = ?').run(now, deadlineIso, assignment.id);
     }
 
     // Retrieve question data for authoritative evaluation
@@ -503,7 +541,6 @@ export class GameService {
 
     const { isCorrect, awardedPoints } = calculateLevel1Score(selectedAnswer, question);
     const answerId = uuidv4();
-    const now = new Date().toISOString();
 
     let newScore = 0;
 
@@ -515,8 +552,8 @@ export class GameService {
       `).run(answerId, activeRound.id, teamId, questionId, selectedAnswer, isCorrect ? 1 : 0, awardedPoints, now);
 
       db.prepare(`
-        UPDATE teams 
-        SET level1_score = level1_score + ?, updated_at = ? 
+        UPDATE teams
+        SET level1_score = level1_score + ?, updated_at = ?
         WHERE id = ?
       `).run(awardedPoints, now, teamId);
 
@@ -526,10 +563,13 @@ export class GameService {
 
     runTransaction();
 
+    // Safe to reveal the correct answer now — ONLY to this team, in direct
+    // response to its own accepted submission (never before, never to others).
     return {
       is_correct: isCorrect,
       awarded_points: awardedPoints,
       explanation: question.explanation,
+      correct_answer: question.correct_answer,
       new_team_score: newScore
     };
   }
@@ -553,6 +593,9 @@ export class GameService {
     if (!activeRound || activeRound.level !== 2 || activeRound.status !== 'active') {
       throw new Error('Level 2 is not currently active.');
     }
+
+    // Round 1 cutoff qualification is enforced here, not just in the UI.
+    this.assertRound2Qualified(teamId);
 
     if (isRoundExpired(activeRound)) {
       throw new Error('Level 2 time limit has expired.');
@@ -643,6 +686,10 @@ export class GameService {
     if (!activeRound || activeRound.level !== 2 || activeRound.status !== 'active') {
       throw new Error('Level 2 is not currently active for final submission.');
     }
+
+    // Round 1 cutoff qualification is enforced here, not just in the UI.
+    this.assertRound2Qualified(teamId);
+
     if (isRoundExpired(activeRound)) {
       throw new Error('Level 2 time limit has expired. No further submissions are accepted.');
     }
@@ -928,6 +975,10 @@ export class GameService {
     if (!activeRound || activeRound.level !== 2 || activeRound.status !== 'active') {
       throw new Error('Level 2 is not currently active.');
     }
+
+    // Round 1 cutoff qualification is enforced here, not just in the UI.
+    this.assertRound2Qualified(teamId);
+
     if (isRoundExpired(activeRound)) {
       throw new Error('Level 2 time limit has expired.');
     }
@@ -1047,13 +1098,14 @@ export class GameService {
     let level1State: TeamPrivateState['level1'] = undefined;
     let level2State: TeamPrivateState['level2'] = undefined;
 
-    // Build Level 1 private state
+    // Build Level 1 private state (per-question server-authoritative timing)
     if (activeRound && activeRound.level === 1) {
       this.ensureTeamQuestionsAssigned(activeRound.id, teamId);
       const assignments = db.prepare(`
-        SELECT 
-          tqa.question_order,
+        SELECT
+          tqa.id as assignment_id, tqa.question_order, tqa.served_at, tqa.deadline_at,
           q.id, q.title, q.prompt, q.content_type, q.media_path, q.category, q.difficulty,
+          q.time_limit_seconds, q.correct_answer,
           ta.selected_answer, ta.awarded_points,
           CASE WHEN ta.id IS NOT NULL THEN 1 ELSE 0 END as is_answered
         FROM team_question_assignments tqa
@@ -1064,46 +1116,80 @@ export class GameService {
       `).all(activeRound.id, teamId) as any[];
 
       const totalAssigned = assignments.length;
-      const answeredList = assignments.filter((a) => a.is_answered === 1);
-      const nextUnanswered = assignments.find((a) => a.is_answered === 0);
+      const nowMs = Date.now();
 
-      // Safe client payload: never leaks correct_answer or explanation
-      const currentQuestion: ClientLevel1Question | null = nextUnanswered ? {
-        id: nextUnanswered.id,
-        title: nextUnanswered.title,
-        prompt: nextUnanswered.prompt,
-        content_type: nextUnanswered.content_type,
-        media_path: nextUnanswered.media_path,
-        category: nextUnanswered.category,
-        difficulty: nextUnanswered.difficulty,
-        question_order: nextUnanswered.question_order,
+      // A question is RESOLVED if it has been answered, or it was served and
+      // its per-question deadline has passed (an authoritative timeout — worth
+      // 0, with no team_answers row ever created). The CURRENT question is the
+      // first unresolved assignment; on first delivery we stamp served_at and
+      // compute its deadline. Timeouts need no write: they are implied by a
+      // passed deadline, so a browser refresh can never "answer" them later.
+      const isTimedOut = (a: any): boolean =>
+        a.is_answered === 0 && !!a.served_at && !!a.deadline_at && nowMs > new Date(a.deadline_at).getTime();
+
+      const answeredCount = assignments.filter((a) => a.is_answered === 1).length;
+
+      let current: any = null;
+      for (const a of assignments) {
+        if (a.is_answered === 1) continue;
+        if (isTimedOut(a)) continue;
+        current = a;
+        break;
+      }
+
+      // Serve the current question if it has not been served yet.
+      if (current && !current.served_at) {
+        const limit = current.time_limit_seconds || 30;
+        const servedAt = new Date(nowMs).toISOString();
+        const deadlineAt = new Date(nowMs + limit * 1000).toISOString();
+        db.prepare('UPDATE team_question_assignments SET served_at = ?, deadline_at = ? WHERE id = ?')
+          .run(servedAt, deadlineAt, current.assignment_id);
+        current.served_at = servedAt;
+        current.deadline_at = deadlineAt;
+      }
+
+      // resolved = answered + timed-out. Round 1 is complete for this team when
+      // every assigned question is resolved (nothing left to serve).
+      const resolvedCount = assignments.filter((a) => a.is_answered === 1 || isTimedOut(a)).length;
+
+      // Safe client payload for the CURRENT question: never includes
+      // correct_answer (it is only revealed in the submit response after the
+      // answer is accepted).
+      const currentQuestion: ClientLevel1Question | null = current ? {
+        id: current.id,
+        title: current.title,
+        prompt: current.prompt,
+        content_type: current.content_type,
+        media_path: current.media_path,
+        category: current.category,
+        difficulty: current.difficulty,
+        question_order: current.question_order,
         total_questions: totalAssigned,
-        is_answered: false
-      } : (assignments.length > 0 ? {
-        id: assignments[assignments.length - 1].id,
-        title: assignments[assignments.length - 1].title,
-        prompt: assignments[assignments.length - 1].prompt,
-        content_type: assignments[assignments.length - 1].content_type,
-        media_path: assignments[assignments.length - 1].media_path,
-        category: assignments[assignments.length - 1].category,
-        difficulty: assignments[assignments.length - 1].difficulty,
-        question_order: assignments[assignments.length - 1].question_order,
-        total_questions: totalAssigned,
-        is_answered: true,
-        selected_answer: assignments[assignments.length - 1].selected_answer,
-        awarded_points: assignments[assignments.length - 1].awarded_points
-      } : null);
+        is_answered: false,
+        time_limit_seconds: current.time_limit_seconds,
+        deadline_at: current.deadline_at
+      } : null;
 
       level1State = {
         current_question: currentQuestion,
-        answered_count: answeredList.length,
+        answered_count: answeredCount,
         total_assigned: totalAssigned,
-        is_completed: answeredList.length === totalAssigned && totalAssigned > 0
+        is_completed: totalAssigned > 0 && resolvedCount === totalAssigned,
+        server_time: new Date(nowMs).toISOString()
       };
     }
 
-    // Build Level 2 private state
-    if (activeRound && activeRound.level === 2) {
+    // Round 2 qualification (only meaningful once Round 1 has concluded).
+    const { settings: liveSettings } = this.getGameSession();
+    let round2Qualified: boolean | undefined = undefined;
+    if (session.status !== 'idle' && session.status !== 'level1_active' && session.status !== 'level1_paused') {
+      round2Qualified = this.isTeamQualifiedForRound2(team, liveSettings);
+    }
+
+    // Build Level 2 private state — ONLY for qualified teams. Unqualified teams
+    // receive no case/clue/media data at all (server-side enforcement; the UI
+    // block is not the security boundary).
+    if (activeRound && activeRound.level === 2 && round2Qualified) {
       const activeCase = db.prepare('SELECT * FROM level2_cases WHERE is_active = 1 LIMIT 1').get() as Level2Case | undefined;
       let clientClues: ClientClue[] = [];
 
@@ -1181,8 +1267,37 @@ export class GameService {
         level2_score: team.level2_score
       },
       level1: level1State,
+      round2_qualified: round2Qualified,
+      round1_cutoff: liveSettings.round1CutoffScore,
       level2: level2State
     };
+  }
+
+  /**
+   * Round 1 → Round 2 qualification check (server-authoritative).
+   *
+   * A team qualifies for Round 2 iff its Round 1 score meets the configured
+   * cutoff. This is the single source of truth used both for building a team's
+   * private state and for gating every Round 2 mutation endpoint.
+   */
+  static isTeamQualifiedForRound2(team: Team, settings: GameSettings): boolean {
+    const cutoff = settings.round1CutoffScore ?? 0;
+    return team.level1_score >= cutoff;
+  }
+
+  /**
+   * Assert a team is qualified for Round 2, throwing otherwise. Used to guard
+   * all Round 2 actions (clue unlock, media replay, final submission).
+   */
+  private static assertRound2Qualified(teamId: string): Team {
+    const db = getDb();
+    const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId) as Team | undefined;
+    if (!team) throw new Error('Team not found.');
+    const { settings } = this.getGameSession();
+    if (!this.isTeamQualifiedForRound2(team, settings)) {
+      throw new Error('Your team did not meet the Round 1 cutoff and is not qualified for Round 2.');
+    }
+    return team;
   }
 
   /**
@@ -1191,5 +1306,25 @@ export class GameService {
   static getLeaderboard() {
     const { session, settings } = this.getGameSession();
     return calculateAuthoritativeLeaderboard(session.id, settings);
+  }
+
+  /**
+   * Get a single team's OWN result only.
+   *
+   * Privacy: participants must never see other teams' scores, rankings, or
+   * global standings (TechBrains requirement). This returns the requesting
+   * team's own score/status with the competitive `rank` stripped out so that
+   * no information about other teams can be inferred. The full ranked
+   * leaderboard remains admin-only.
+   */
+  static getTeamResult(teamId: string) {
+    const { session, settings } = this.getGameSession();
+    const entry = calculateAuthoritativeLeaderboard(session.id, settings).find(
+      (e) => e.team_id === teamId
+    );
+    if (!entry) return null;
+    // Deliberately omit `rank` — relative standing is not exposed to participants.
+    const { rank, ...ownResult } = entry;
+    return ownResult;
   }
 }

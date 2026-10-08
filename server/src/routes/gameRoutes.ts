@@ -70,6 +70,9 @@ router.post('/level1/answer', requireTeamAuth, rateLimiter(5000, 30, 'Submitting
       is_correct: result.is_correct,
       awarded_points: result.awarded_points,
       explanation: result.explanation,
+      // Correct answer is revealed ONLY in this direct response to the team's
+      // own accepted submission (never before submission, never to other teams).
+      correct_answer: result.correct_answer,
       new_team_score: result.new_team_score
     });
   } catch (err: any) {
@@ -212,31 +215,55 @@ router.post('/level2/conclusion', requireTeamAuth, (req: Request, res: Response)
 });
 
 /**
- * Public or participant leaderboard endpoint
+ * Full ranked leaderboard / global standings.
+ *
+ * ADMIN ONLY. Participants must never receive other teams' scores, rankings,
+ * or global standings — not via the frontend and not by calling this API
+ * directly. A participant (or anonymous) request is rejected with 403; teams
+ * read only their own result via GET /api/game/my-result below.
  * Route: GET /api/game/leaderboard
  */
 router.get('/leaderboard', (req: Request, res: Response): void => {
   try {
-    const { settings } = GameService.getGameSession();
-    // Allow early viewing ONLY for a verified admin — never on cookie presence.
+    // Never trust mere cookie presence — require a verified admin signature.
     const isVerifiedAdmin = !!verifyAdminToken(getAdminTokenFromRequest(req));
-
-    if (!settings.resultsPublished && !isVerifiedAdmin) {
-      res.json({
-        is_published: false,
-        message: 'Final results have not been published by event officials yet.',
-        leaderboard: []
-      });
+    if (!isVerifiedAdmin) {
+      res.status(403).json({ error: 'The global leaderboard is restricted to event administrators.' });
       return;
     }
 
     const leaderboard = GameService.getLeaderboard();
-    res.json({
-      is_published: true,
-      leaderboard
-    });
+    res.json({ is_published: true, leaderboard });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to retrieve leaderboard.' });
+  }
+});
+
+/**
+ * A team's OWN result only (never other teams' scores or standings).
+ *
+ * Returns the requesting team's own score/status once results are published by
+ * the admin. Enforced server-side: requires team auth, scopes strictly to
+ * req.team.id, and strips any competitive ranking.
+ * Route: GET /api/game/my-result
+ */
+router.get('/my-result', requireTeamAuth, (req: Request, res: Response): void => {
+  try {
+    const { settings } = GameService.getGameSession();
+
+    if (!settings.resultsPublished) {
+      res.json({
+        is_published: false,
+        message: 'Final results have not been published by event officials yet.',
+        result: null
+      });
+      return;
+    }
+
+    const result = GameService.getTeamResult(req.team!.id);
+    res.json({ is_published: true, result });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to retrieve your result.' });
   }
 });
 

@@ -180,18 +180,19 @@ router.post('/questions', (req: Request, res: Response): void => {
 
     db.prepare(`
       INSERT INTO level1_questions (
-        id, title, prompt, content_type, media_path, correct_answer, explanation, category, difficulty, is_active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, title, prompt, content_type, media_path, correct_answer, explanation, category, difficulty, time_limit_seconds, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       q.title,
-      q.prompt,
+      q.prompt ?? '',
       q.content_type,
       q.media_path || null,
       q.correct_answer,
       q.explanation || null,
       q.category || null,
       q.difficulty || null,
+      q.time_limit_seconds,
       q.is_active,
       now,
       now
@@ -224,7 +225,7 @@ router.put('/questions/:id', (req: Request, res: Response): void => {
 
     const now = new Date().toISOString();
     db.prepare(`
-      UPDATE level1_questions 
+      UPDATE level1_questions
       SET title = COALESCE(?, title),
           prompt = COALESCE(?, prompt),
           content_type = COALESCE(?, content_type),
@@ -233,6 +234,7 @@ router.put('/questions/:id', (req: Request, res: Response): void => {
           explanation = COALESCE(?, explanation),
           category = COALESCE(?, category),
           difficulty = COALESCE(?, difficulty),
+          time_limit_seconds = COALESCE(?, time_limit_seconds),
           is_active = COALESCE(?, is_active),
           updated_at = ?
       WHERE id = ?
@@ -245,6 +247,7 @@ router.put('/questions/:id', (req: Request, res: Response): void => {
       q.explanation ?? null,
       q.category ?? null,
       q.difficulty ?? null,
+      q.time_limit_seconds ?? null,
       q.is_active ?? null,
       now,
       id

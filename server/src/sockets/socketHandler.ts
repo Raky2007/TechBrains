@@ -114,10 +114,19 @@ export function emitToAdmin(event: string, payload: any): void {
 }
 
 /**
- * Broadcast published leaderboard
+ * Broadcast that final results have been published.
+ *
+ * Privacy: the full ranked leaderboard (every team's scores) is sent ONLY to
+ * the admin channel. Participants receive a scores-free `results:published`
+ * signal on the session channel; each team then fetches its OWN result via
+ * GET /api/game/my-result. This prevents leaking global standings or other
+ * teams' scores to participants over Socket.IO.
  */
 export function broadcastLeaderboard(leaderboard: any): void {
   if (!ioInstance) return;
   const { session } = GameService.getGameSession();
-  ioInstance.to(`session:${session.id}`).emit('leaderboard:published', leaderboard);
+  // Full standings → administrators only.
+  ioInstance.to('admin_channel').emit('leaderboard:published', leaderboard);
+  // Scores-free signal → all participant terminals.
+  ioInstance.to(`session:${session.id}`).emit('results:published', { is_published: true });
 }

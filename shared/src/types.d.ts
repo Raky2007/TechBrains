@@ -7,11 +7,22 @@ export type Level1AnswerChoice = 'AI' | 'HUMAN' | 'CANT_DEFINE';
 export type ContentType = 'image' | 'video' | 'text';
 export type ConclusionStatus = 'draft' | 'submitted' | 'reopened';
 export interface GameSettings {
+    /**
+     * @deprecated Round 1 no longer uses a single overall timer. Total Round 1
+     * duration is the sum of each question's individual timer. Retained only for
+     * backward compatibility with existing stored sessions; not admin-configured.
+     */
     level1DurationMinutes: number;
     level2DurationMinutes: number;
     initialCredits: number;
     /** Explicit, consistent maximum for the Round 2 evaluation score (default 20). */
     round2MaxScore: number;
+    /**
+     * Round 1 qualification cutoff. After Round 1 ends, only teams whose final
+     * Round 1 score is >= this value qualify for Round 2. Default 0 (everyone
+     * qualifies). Enforced server-side.
+     */
+    round1CutoffScore: number;
     resultsPublished: boolean;
     tieBreakerRule: 'default' | 'l2_first' | 'l1_accuracy' | 'time_first';
     randomizeQuestionOrder: boolean;
@@ -63,6 +74,8 @@ export interface Level1Question {
     explanation: string | null;
     category: string | null;
     difficulty: 'easy' | 'medium' | 'hard' | null;
+    /** Per-question server-authoritative countdown, in seconds. */
+    time_limit_seconds: number;
     is_active: number;
     created_at: string;
     updated_at: string;
@@ -83,6 +96,19 @@ export interface ClientLevel1Question {
     is_answered: boolean;
     selected_answer?: Level1AnswerChoice;
     awarded_points?: number;
+    /** Per-question timer (seconds) for this specific question. */
+    time_limit_seconds: number;
+    /**
+     * Server-authoritative deadline (ISO) for the CURRENT unanswered question.
+     * The client renders remaining time from this; the server decides timeout.
+     */
+    deadline_at?: string | null;
+    /**
+     * The correct answer. ONLY ever populated for a question this team has
+     * already answered (revealed post-submission). Never present on an
+     * unanswered/current question, in any API response or socket event.
+     */
+    correct_answer?: Level1AnswerChoice;
 }
 export interface Round {
     id: string;
@@ -290,7 +316,17 @@ export interface TeamPrivateState {
         answered_count: number;
         total_assigned: number;
         is_completed: boolean;
+        /** Server clock (ISO) so the client can reconcile its per-question countdown. */
+        server_time: string;
     };
+    /**
+     * Round 2 qualification for THIS team (present once Round 1 has concluded).
+     * Teams below the configured cutoff are not qualified and are blocked from
+     * Round 2 both in the UI and server-side.
+     */
+    round2_qualified?: boolean;
+    /** The Round 1 cutoff in effect (for participant messaging only). */
+    round1_cutoff?: number;
     level2?: {
         case: {
             id: string;

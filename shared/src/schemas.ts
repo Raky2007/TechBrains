@@ -38,11 +38,16 @@ export const adminLoginSchema = z.object({
 });
 
 export const adminCreateQuestionSchema = z.object({
-  title: z.string().trim().min(2, 'Title is required').max(100),
-  prompt: z.string().trim().min(2, 'Prompt is required'),
+  title: z.string().trim().min(2, 'Question content is required').max(200),
+  // Prompt/instructions are deprecated in the simplified TechBrains Round 1
+  // editor and are optional. Kept for backward compatibility with existing data.
+  prompt: z.string().trim().optional(),
   content_type: z.enum(['image', 'video', 'text']),
   media_path: z.string().nullable().optional(),
   correct_answer: z.enum(['AI', 'HUMAN', 'CANT_DEFINE']),
+  // Per-question server-authoritative timer (seconds).
+  time_limit_seconds: z.number().int().min(3, 'Minimum 3 seconds').max(600, 'Maximum 600 seconds').default(30),
+  // Deprecated, optional metadata (hidden in the simplified editor).
   explanation: z.string().trim().nullable().optional(),
   category: z.string().trim().nullable().optional(),
   difficulty: z.enum(['easy', 'medium', 'hard']).nullable().optional(),
@@ -111,10 +116,14 @@ export const adminEvaluationOverrideSchema = z.object({
 });
 
 export const adminSettingsSchema = z.object({
-  level1DurationMinutes: z.number().int().min(1).max(180),
+  // Deprecated: Round 1 timing comes from per-question timers. Optional so the
+  // admin UI no longer needs to send an overall Round 1 duration.
+  level1DurationMinutes: z.number().int().min(1).max(180).optional(),
   level2DurationMinutes: z.number().int().min(1).max(180),
   initialCredits: z.number().int().min(10).max(10000),
   round2MaxScore: z.number().min(1).max(1000),
+  // Round 1 qualification cutoff (score >= cutoff qualifies for Round 2).
+  round1CutoffScore: z.number().int().min(-1000).max(1000).default(0),
   resultsPublished: z.boolean(),
   tieBreakerRule: z.enum(['default', 'l2_first', 'l1_accuracy', 'time_first']),
   randomizeQuestionOrder: z.boolean()

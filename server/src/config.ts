@@ -44,6 +44,7 @@ export const CONFIG = {
     level2DurationMinutes: parseInt(process.env.LEVEL2_DURATION_MINUTES || '20', 10),
     initialCredits: parseInt(process.env.INITIAL_CREDITS || '200', 10),
     round2MaxScore: parseInt(process.env.ROUND2_MAX_SCORE || '20', 10),
+    round1CutoffScore: parseInt(process.env.ROUND1_CUTOFF_SCORE || '0', 10),
     resultsPublished: false,
     tieBreakerRule: 'default' as const,
     randomizeQuestionOrder: true

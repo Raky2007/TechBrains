@@ -63,7 +63,7 @@ export const BRANDING: BrandingConfig = {
     success: "#18794E"
   },
   typography: {
-    headingFont: "'Space Grotesk', system-ui, -apple-system, sans-serif",
+    headingFont: "'Sora', system-ui, -apple-system, sans-serif",
     bodyFont: "'Inter', system-ui, -apple-system, sans-serif",
     monoFont: "'JetBrains Mono', 'Courier New', monospace"
   },

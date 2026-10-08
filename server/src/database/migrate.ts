@@ -58,6 +58,23 @@ export function runMigrations(): string[] {
     ])
   );
 
+  // TechBrains Round 1 per-question timer. Existing questions default to 30s so
+  // seeded/legacy data keeps working. (SQLite ADD COLUMN cannot carry a CHECK,
+  // which is fine — the service and schema.sql validate positivity.)
+  applied.push(
+    ...ensureColumns(db, 'level1_questions', [
+      { name: 'time_limit_seconds', definition: 'INTEGER NOT NULL DEFAULT 30' }
+    ])
+  );
+
+  // TechBrains Round 1 per-question server-authoritative timing bookkeeping.
+  applied.push(
+    ...ensureColumns(db, 'team_question_assignments', [
+      { name: 'served_at', definition: 'TEXT' },
+      { name: 'deadline_at', definition: 'TEXT' }
+    ])
+  );
+
   if (applied.length > 0) {
     console.log(`[Migrate] Applied additive column migrations: ${applied.join(', ')}`);
   } else {

@@ -53,30 +53,33 @@ export declare const adminLoginSchema: z.ZodObject<{
 }>;
 export declare const adminCreateQuestionSchema: z.ZodObject<{
     title: z.ZodString;
-    prompt: z.ZodString;
+    prompt: z.ZodOptional<z.ZodString>;
     content_type: z.ZodEnum<["image", "video", "text"]>;
     media_path: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     correct_answer: z.ZodEnum<["AI", "HUMAN", "CANT_DEFINE"]>;
+    time_limit_seconds: z.ZodDefault<z.ZodNumber>;
     explanation: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     category: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     difficulty: z.ZodOptional<z.ZodNullable<z.ZodEnum<["easy", "medium", "hard"]>>>;
     is_active: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     title: string;
-    prompt: string;
     content_type: "image" | "video" | "text";
     correct_answer: "AI" | "HUMAN" | "CANT_DEFINE";
+    time_limit_seconds: number;
     is_active: number;
+    prompt?: string | undefined;
     media_path?: string | null | undefined;
     explanation?: string | null | undefined;
     category?: string | null | undefined;
     difficulty?: "easy" | "medium" | "hard" | null | undefined;
 }, {
     title: string;
-    prompt: string;
     content_type: "image" | "video" | "text";
     correct_answer: "AI" | "HUMAN" | "CANT_DEFINE";
+    prompt?: string | undefined;
     media_path?: string | null | undefined;
+    time_limit_seconds?: number | undefined;
     explanation?: string | null | undefined;
     category?: string | null | undefined;
     difficulty?: "easy" | "medium" | "hard" | null | undefined;
@@ -84,10 +87,11 @@ export declare const adminCreateQuestionSchema: z.ZodObject<{
 }>;
 export declare const adminUpdateQuestionSchema: z.ZodObject<{
     title: z.ZodOptional<z.ZodString>;
-    prompt: z.ZodOptional<z.ZodString>;
+    prompt: z.ZodOptional<z.ZodOptional<z.ZodString>>;
     content_type: z.ZodOptional<z.ZodEnum<["image", "video", "text"]>>;
     media_path: z.ZodOptional<z.ZodOptional<z.ZodNullable<z.ZodString>>>;
     correct_answer: z.ZodOptional<z.ZodEnum<["AI", "HUMAN", "CANT_DEFINE"]>>;
+    time_limit_seconds: z.ZodOptional<z.ZodDefault<z.ZodNumber>>;
     explanation: z.ZodOptional<z.ZodOptional<z.ZodNullable<z.ZodString>>>;
     category: z.ZodOptional<z.ZodOptional<z.ZodNullable<z.ZodString>>>;
     difficulty: z.ZodOptional<z.ZodOptional<z.ZodNullable<z.ZodEnum<["easy", "medium", "hard"]>>>>;
@@ -98,6 +102,7 @@ export declare const adminUpdateQuestionSchema: z.ZodObject<{
     content_type?: "image" | "video" | "text" | undefined;
     media_path?: string | null | undefined;
     correct_answer?: "AI" | "HUMAN" | "CANT_DEFINE" | undefined;
+    time_limit_seconds?: number | undefined;
     explanation?: string | null | undefined;
     category?: string | null | undefined;
     difficulty?: "easy" | "medium" | "hard" | null | undefined;
@@ -108,6 +113,7 @@ export declare const adminUpdateQuestionSchema: z.ZodObject<{
     content_type?: "image" | "video" | "text" | undefined;
     media_path?: string | null | undefined;
     correct_answer?: "AI" | "HUMAN" | "CANT_DEFINE" | undefined;
+    time_limit_seconds?: number | undefined;
     explanation?: string | null | undefined;
     category?: string | null | undefined;
     difficulty?: "easy" | "medium" | "hard" | null | undefined;
@@ -277,27 +283,30 @@ export declare const adminEvaluationOverrideSchema: z.ZodObject<{
     reasoning?: string | null | undefined;
 }>;
 export declare const adminSettingsSchema: z.ZodObject<{
-    level1DurationMinutes: z.ZodNumber;
+    level1DurationMinutes: z.ZodOptional<z.ZodNumber>;
     level2DurationMinutes: z.ZodNumber;
     initialCredits: z.ZodNumber;
     round2MaxScore: z.ZodNumber;
+    round1CutoffScore: z.ZodDefault<z.ZodNumber>;
     resultsPublished: z.ZodBoolean;
     tieBreakerRule: z.ZodEnum<["default", "l2_first", "l1_accuracy", "time_first"]>;
     randomizeQuestionOrder: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
-    level1DurationMinutes: number;
     level2DurationMinutes: number;
     initialCredits: number;
     round2MaxScore: number;
+    round1CutoffScore: number;
     resultsPublished: boolean;
     tieBreakerRule: "default" | "l2_first" | "l1_accuracy" | "time_first";
     randomizeQuestionOrder: boolean;
+    level1DurationMinutes?: number | undefined;
 }, {
-    level1DurationMinutes: number;
     level2DurationMinutes: number;
     initialCredits: number;
     round2MaxScore: number;
     resultsPublished: boolean;
     tieBreakerRule: "default" | "l2_first" | "l1_accuracy" | "time_first";
     randomizeQuestionOrder: boolean;
+    level1DurationMinutes?: number | undefined;
+    round1CutoffScore?: number | undefined;
 }>;

@@ -1,35 +1,39 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useTeam } from '../layouts/TeamLayout';
 import { CountdownTimer } from '../components/CountdownTimer';
 import { apiFetch } from '../lib/api';
 import { getSocket } from '../lib/socket';
-import { ClientLevel1Question, Level1AnswerChoice, TeamPrivateState } from '@nexus/shared';
-import {
-  CheckCircle2,
-  XCircle,
-  AlertCircle,
-  ArrowRight,
-  Loader2
-} from 'lucide-react';
+import { Level1AnswerChoice, TeamPrivateState } from '@nexus/shared';
+import { CheckCircle2, XCircle, AlertCircle, Loader2 } from 'lucide-react';
+
+const ANSWER_LABELS: Record<Level1AnswerChoice, string> = {
+  AI: 'AI Made',
+  HUMAN: 'Human Made',
+  CANT_DEFINE: "Can't Determine"
+};
+
+// How long the correct-answer result stays on screen before auto-advancing.
+// Presentation-only; the server does not depend on this delay for scoring.
+const RESULT_DISPLAY_MS = 1000;
 
 export const Level1GamePage: React.FC = () => {
-  const navigate = useNavigate();
   const { team, gameState, refreshTeam, refreshGameState } = useTeam();
 
   const [level1State, setLevel1State] = useState<TeamPrivateState['level1'] | null>(null);
   const [selectedChoice, setSelectedChoice] = useState<Level1AnswerChoice | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [submissionFeedback, setSubmissionFeedback] = useState<{
+  const [feedback, setFeedback] = useState<{
     is_correct: boolean;
     awarded_points: number;
-    explanation: string | null;
+    correct_answer: Level1AnswerChoice;
+    timed_out?: boolean;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // Fetch private team Level 1 state
+  const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isResolvingRef = useRef<boolean>(false);
+
   const loadProgress = useCallback(async () => {
     try {
       const res = await apiFetch<TeamPrivateState>('/api/game/team-state');
@@ -41,18 +45,26 @@ export const Level1GamePage: React.FC = () => {
     }
   }, []);
 
+  // Clear the result and move to the next question (fetches fresh server state).
+  const advanceToNext = useCallback(async () => {
+    setFeedback(null);
+    setSelectedChoice(null);
+    setError(null);
+    isResolvingRef.current = false;
+    await loadProgress();
+  }, [loadProgress]);
+
   useEffect(() => {
     loadProgress();
-
     const socket = getSocket();
     const handleRoundEnded = () => {
       refreshGameState();
       loadProgress();
     };
-
     socket.on('round:ended', handleRoundEnded);
     return () => {
       socket.off('round:ended', handleRoundEnded);
+      if (advanceTimer.current) clearTimeout(advanceTimer.current);
     };
   }, [loadProgress, refreshGameState]);
 
@@ -60,269 +72,204 @@ export const Level1GamePage: React.FC = () => {
   const isCompleted = level1State?.is_completed || false;
   const isRoundEnded = gameState?.status === 'level1_ended';
 
-  // Keyboard shortcut handler (A/1, B/2, C/3)
+  // Keyboard shortcuts (A/1, B/2, C/3) — disabled while a result is showing.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (isSubmitting || submissionFeedback || isCompleted || isRoundEnded) return;
-
+      if (isSubmitting || feedback || isCompleted || isRoundEnded) return;
       const key = e.key.toUpperCase();
       if (key === 'A' || key === '1') setSelectedChoice('AI');
       if (key === 'B' || key === '2') setSelectedChoice('HUMAN');
       if (key === 'C' || key === '3') setSelectedChoice('CANT_DEFINE');
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSubmitting, submissionFeedback, isCompleted, isRoundEnded]);
+  }, [isSubmitting, feedback, isCompleted, isRoundEnded]);
 
-  const handleSubmitAnswer = async () => {
-    if (!currentQ || !selectedChoice || isSubmitting || submissionFeedback) return;
+  const scheduleAdvance = useCallback(() => {
+    if (advanceTimer.current) clearTimeout(advanceTimer.current);
+    advanceTimer.current = setTimeout(() => {
+      advanceToNext();
+    }, RESULT_DISPLAY_MS);
+  }, [advanceToNext]);
 
-    setIsSubmitting(true);
-    setError(null);
-
-    try {
-      const res = await apiFetch<{
-        is_correct: boolean;
-        awarded_points: number;
-        explanation: string | null;
-        new_team_score: number;
-      }>('/api/game/level1/answer', {
-        method: 'POST',
-        body: JSON.stringify({
-          question_id: currentQ.id,
-          selected_answer: selectedChoice
-        })
-      });
-
-      setSubmissionFeedback({
-        is_correct: res.is_correct,
-        awarded_points: res.awarded_points,
-        explanation: res.explanation
-      });
-
-      await refreshTeam();
-      // NOTE: no auto-advance. The participant must deliberately press NEXT.
-    } catch (err: any) {
-      setError(err.message || 'Failed to submit answer.');
-    } finally {
+  const handleSubmitAnswer = useCallback(
+    async (choice: Level1AnswerChoice) => {
+      if (!currentQ || isSubmitting || feedback) return;
+      setIsSubmitting(true);
+      setError(null);
+      try {
+        const res = await apiFetch<{
+          is_correct: boolean;
+          awarded_points: number;
+          correct_answer: Level1AnswerChoice;
+        }>('/api/game/level1/answer', {
+          method: 'POST',
+          body: JSON.stringify({ question_id: currentQ.id, selected_answer: choice })
+        });
+        setFeedback({
+          is_correct: res.is_correct,
+          awarded_points: res.awarded_points,
+          correct_answer: res.correct_answer
+        });
+        await refreshTeam();
+        scheduleAdvance(); // show result briefly, then auto-advance
+      } catch (err: any) {
+        // Server-authoritative timeout (or a race at the deadline): treat as a
+        // timed-out question and advance without scoring.
+        const msg = err?.message || '';
+        if (/time is up|timed out|already submitted/i.test(msg)) {
+          setFeedback({ is_correct: false, awarded_points: 0, correct_answer: 'CANT_DEFINE', timed_out: true });
+          scheduleAdvance();
+        } else {
+          setError(msg || 'Failed to submit answer.');
+          setIsSubmitting(false);
+        }
+        return;
+      }
       setIsSubmitting(false);
-    }
-  };
+    },
+    [currentQ, isSubmitting, feedback, refreshTeam, scheduleAdvance]
+  );
 
-  const handleNextQuestion = async () => {
-    setSubmissionFeedback(null);
-    setSelectedChoice(null);
-    setError(null);
-    await loadProgress();
-  };
+  // Server-authoritative per-question timeout. When the on-screen countdown
+  // reaches zero we stop accepting input and advance; the server has already
+  // (or will on next fetch) treat the question as a 0-point timeout.
+  const handleTimeout = useCallback(() => {
+    if (isResolvingRef.current || feedback || isSubmitting) return;
+    isResolvingRef.current = true;
+    setFeedback({ is_correct: false, awarded_points: 0, correct_answer: 'CANT_DEFINE', timed_out: true });
+    scheduleAdvance();
+  }, [feedback, isSubmitting, scheduleAdvance]);
 
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 font-mono text-[#737373] text-sm">
         <Loader2 className="w-7 h-7 animate-spin text-[#171717]" />
-        <span>Loading forensic questions...</span>
+        <span>Loading questions…</span>
       </div>
     );
   }
 
-  // Completion State
-  if (isCompleted || isRoundEnded) {
+  // Completion / round-ended state
+  if ((isCompleted || isRoundEnded) && !feedback) {
     return (
       <div className="max-w-2xl mx-auto my-12 bg-[#FFFFFF] border border-[#E5E5E5] rounded-2xl p-8 text-center space-y-6 shadow-sm">
         <div className="w-14 h-14 rounded-full bg-[#18794E]/10 border border-[#18794E]/20 text-[#18794E] mx-auto flex items-center justify-center">
           <CheckCircle2 className="w-7 h-7" />
         </div>
-
         <div className="space-y-2">
-          <span className="text-xs font-mono uppercase tracking-widest text-[#737373] font-bold">
-            LEVEL 1 COMPLETED
-          </span>
-          <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#171717]">
-            AI vs Human Discrimination Concluded
-          </h1>
+          <span className="text-xs font-mono uppercase tracking-widest text-[#737373] font-bold">ROUND 1 COMPLETE</span>
+          <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#171717]">All questions answered</h1>
           <p className="text-xs sm:text-sm text-[#737373] max-w-md mx-auto leading-relaxed">
-            Your responses have been recorded and scored. Please wait — the host will start Round 2 when all teams are ready.
+            Your responses are recorded. Please wait — the host will start Round 2 for qualified teams.
           </p>
         </div>
-
         <div className="p-6 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5] max-w-xs mx-auto space-y-1">
-          <span className="text-xs font-mono text-[#737373] uppercase font-bold">Total Level 1 Score</span>
+          <span className="text-xs font-mono text-[#737373] uppercase font-bold">Total Round 1 Score</span>
           <div className="text-4xl font-heading font-bold text-[#171717] font-mono">
             {team?.level1_score ?? 0} <span className="text-base text-[#737373] font-normal">pts</span>
           </div>
           <span className="text-xs font-mono text-[#737373] block pt-1">
-            {level1State?.answered_count ?? 0} of {level1State?.total_assigned ?? 0} questions evaluated
+            {level1State?.answered_count ?? 0} of {level1State?.total_assigned ?? 0} answered
           </span>
         </div>
-
-        {error && (
-          <div className="p-3 rounded-lg bg-[#B42318]/5 border border-[#B42318]/20 text-[#B42318] text-xs font-medium">
-            {error}
-          </div>
-        )}
-
-        <div className="pt-4 border-t border-[#E5E5E5] flex flex-col sm:flex-row items-center justify-center gap-3">
-          <button
-            onClick={() => navigate('/waiting')}
-            className="w-full sm:w-auto px-5 py-3 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#F5F5F2] hover:bg-[#E5E5E5] border border-[#E5E5E5] transition-colors cursor-pointer"
-          >
-            &larr; Waiting Room
-          </button>
-          <div className="w-full sm:w-auto px-6 py-3 rounded-xl font-mono text-xs tracking-wider uppercase text-[#737373] bg-[#F5F5F2] border border-[#E5E5E5] flex items-center justify-center gap-2">
+        <div className="pt-4 border-t border-[#E5E5E5] flex items-center justify-center">
+          <div className="px-6 py-3 rounded-xl font-mono text-xs tracking-wider uppercase text-[#737373] bg-[#F5F5F2] border border-[#E5E5E5] flex items-center justify-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin text-[#737373]" />
-            <span>Waiting for host to start Round 2</span>
+            <span>Waiting for host to continue</span>
           </div>
         </div>
       </div>
     );
   }
 
-  // Active Gameplay UI
   const questionNumber = currentQ ? String(currentQ.question_order).padStart(2, '0') : '01';
   const totalQuestions = currentQ ? String(currentQ.total_questions).padStart(2, '0') : '01';
+  const options: Level1AnswerChoice[] = ['AI', 'HUMAN', 'CANT_DEFINE'];
+  const optionMeta: Record<Level1AnswerChoice, { letter: string; sub: string }> = {
+    AI: { letter: 'A', sub: 'Synthetic Artifact' },
+    HUMAN: { letter: 'B', sub: 'Authentic Source' },
+    CANT_DEFINE: { letter: 'C', sub: 'Ambiguous' }
+  };
+
+  const inputsLocked = isSubmitting || !!feedback;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Top Header: Question counter & countdown timer */}
+      {/* Header: question counter + per-question timer */}
       <div className="flex items-center justify-between pb-4 border-b border-[#E5E5E5]">
         <div className="flex items-center gap-3">
-          <span className="text-xs font-heading font-bold text-[#171717] uppercase tracking-wider">
-            QUESTION
-          </span>
+          <span className="text-xs font-heading font-bold text-[#171717] uppercase tracking-wider">QUESTION</span>
           <span className="px-3 py-1 rounded-md bg-[#F5F5F2] border border-[#E5E5E5] font-mono text-sm font-bold text-[#171717]">
             {questionNumber} / {totalQuestions}
           </span>
-          {currentQ?.category && (
-            <span className="hidden sm:inline-block px-2.5 py-1 rounded text-xs font-mono text-[#737373] bg-[#F5F5F2] border border-[#E5E5E5]">
-              {currentQ.category}
-            </span>
-          )}
         </div>
-
-        {/* Server Authoritative Timer with light style & #FF8A24 warning */}
+        {/* Per-question server-authoritative countdown (frozen once answered). */}
         <CountdownTimer
-          deadlineAt={gameState?.round?.deadline_at || null}
-          isPaused={gameState?.round?.is_paused || false}
-          remainingSeconds={gameState?.round?.remaining_seconds || 0}
+          deadlineAt={currentQ?.deadline_at || null}
+          isPaused={!!feedback}
+          remainingSeconds={currentQ?.time_limit_seconds || 0}
+          onExpire={handleTimeout}
         />
       </div>
 
-      {/* Main Question Card: #FFFFFF, border #E5E5E5 */}
       {currentQ && (
         <div className="bg-[#FFFFFF] border border-[#E5E5E5] rounded-2xl p-6 sm:p-8 space-y-6 shadow-sm">
-          {/* Title & Prompt */}
           <div className="space-y-2">
-            <h2 className="text-xl font-heading font-bold text-[#171717]">
-              {currentQ.title}
-            </h2>
-            <p className="text-sm text-[#737373] leading-relaxed whitespace-pre-wrap font-body">
-              {currentQ.prompt}
-            </p>
+            <h2 className="text-xl font-heading font-bold text-[#171717]">{currentQ.title}</h2>
+            {currentQ.prompt && (
+              <p className="text-sm text-[#737373] leading-relaxed whitespace-pre-wrap font-body">{currentQ.prompt}</p>
+            )}
           </div>
 
-          {/* Media Area (Contained & Responsive) */}
           {currentQ.media_path && (
             <div className="rounded-xl overflow-hidden border border-[#E5E5E5] bg-[#F5F5F2] max-h-96 flex items-center justify-center p-2">
               {currentQ.content_type === 'image' && (
-                <img
-                  src={currentQ.media_path}
-                  alt={currentQ.title}
-                  className="max-h-96 w-full object-contain rounded-lg"
-                />
+                <img src={currentQ.media_path} alt={currentQ.title} className="max-h-96 w-full object-contain rounded-lg" />
               )}
               {currentQ.content_type === 'video' && (
-                <video
-                  src={currentQ.media_path}
-                  controls
-                  className="max-h-96 w-full object-contain rounded-lg"
-                />
+                <video src={currentQ.media_path} controls className="max-h-96 w-full object-contain rounded-lg" />
               )}
             </div>
           )}
 
-          {/* Option Buttons: A, B, C with yellow #FFC928 active state */}
+          {/* Options — clicking submits immediately (no separate submit step). */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-2">
-            {/* Option A: AI Made */}
-            <button
-              type="button"
-              disabled={isSubmitting || !!submissionFeedback}
-              onClick={() => setSelectedChoice('AI')}
-              className={`p-4 rounded-xl border text-left flex items-center gap-3 transition-all cursor-pointer ${
-                selectedChoice === 'AI'
-                  ? 'bg-[#FFC928] border-[#171717] text-[#171717] shadow-xs'
-                  : 'bg-[#FFFFFF] border-[#E5E5E5] text-[#171717] hover:border-[#171717]'
-              } disabled:cursor-not-allowed`}
-            >
-              <div
-                className={`w-9 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-sm shrink-0 ${
-                  selectedChoice === 'AI'
-                    ? 'bg-[#171717] text-white'
-                    : 'bg-[#F5F5F2] border border-[#E5E5E5] text-[#171717]'
-                }`}
-              >
-                A
-              </div>
-              <div>
-                <div className="font-heading font-bold text-sm text-[#171717]">AI Made</div>
-                <div className="text-[11px] font-mono text-[#737373]">Synthetic Artifact</div>
-              </div>
-            </button>
-
-            {/* Option B: Human Made */}
-            <button
-              type="button"
-              disabled={isSubmitting || !!submissionFeedback}
-              onClick={() => setSelectedChoice('HUMAN')}
-              className={`p-4 rounded-xl border text-left flex items-center gap-3 transition-all cursor-pointer ${
-                selectedChoice === 'HUMAN'
-                  ? 'bg-[#FFC928] border-[#171717] text-[#171717] shadow-xs'
-                  : 'bg-[#FFFFFF] border-[#E5E5E5] text-[#171717] hover:border-[#171717]'
-              } disabled:cursor-not-allowed`}
-            >
-              <div
-                className={`w-9 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-sm shrink-0 ${
-                  selectedChoice === 'HUMAN'
-                    ? 'bg-[#171717] text-white'
-                    : 'bg-[#F5F5F2] border border-[#E5E5E5] text-[#171717]'
-                }`}
-              >
-                B
-              </div>
-              <div>
-                <div className="font-heading font-bold text-sm text-[#171717]">Human Made</div>
-                <div className="text-[11px] font-mono text-[#737373]">Authentic Source</div>
-              </div>
-            </button>
-
-            {/* Option C: Can't Define */}
-            <button
-              type="button"
-              disabled={isSubmitting || !!submissionFeedback}
-              onClick={() => setSelectedChoice('CANT_DEFINE')}
-              className={`p-4 rounded-xl border text-left flex items-center gap-3 transition-all cursor-pointer ${
-                selectedChoice === 'CANT_DEFINE'
-                  ? 'bg-[#FFC928] border-[#171717] text-[#171717] shadow-xs'
-                  : 'bg-[#FFFFFF] border-[#E5E5E5] text-[#171717] hover:border-[#171717]'
-              } disabled:cursor-not-allowed`}
-            >
-              <div
-                className={`w-9 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-sm shrink-0 ${
-                  selectedChoice === 'CANT_DEFINE'
-                    ? 'bg-[#171717] text-white'
-                    : 'bg-[#F5F5F2] border border-[#E5E5E5] text-[#171717]'
-                }`}
-              >
-                C
-              </div>
-              <div>
-                <div className="font-heading font-bold text-sm text-[#171717]">Can't Define</div>
-                <div className="text-[11px] font-mono text-[#737373]">Forensically Ambiguous</div>
-              </div>
-            </button>
+            {options.map((opt) => {
+              const meta = optionMeta[opt];
+              const isChosen = selectedChoice === opt;
+              const isTheCorrect = feedback && feedback.correct_answer === opt;
+              let stateClass = 'bg-[#FFFFFF] border-[#E5E5E5] text-[#171717] hover:border-[#171717]';
+              if (feedback) {
+                if (isTheCorrect) stateClass = 'bg-[#18794E]/10 border-[#18794E] text-[#171717]';
+                else if (isChosen) stateClass = 'bg-[#B42318]/10 border-[#B42318] text-[#171717]';
+                else stateClass = 'bg-[#FFFFFF] border-[#E5E5E5] text-[#A3A3A3]';
+              } else if (isChosen) {
+                stateClass = 'bg-[#FFC928] border-[#171717] text-[#171717] shadow-xs';
+              }
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  disabled={inputsLocked}
+                  onClick={() => {
+                    setSelectedChoice(opt);
+                    handleSubmitAnswer(opt);
+                  }}
+                  className={`p-4 rounded-xl border text-left flex items-center gap-3 transition-all cursor-pointer disabled:cursor-not-allowed ${stateClass}`}
+                >
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-sm shrink-0 bg-[#F5F5F2] border border-[#E5E5E5] text-[#171717]">
+                    {meta.letter}
+                  </div>
+                  <div>
+                    <div className="font-heading font-bold text-sm text-[#171717]">{ANSWER_LABELS[opt]}</div>
+                    <div className="text-[11px] font-mono text-[#737373]">{meta.sub}</div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
 
-          {/* Error Message */}
           {error && (
             <div className="p-3.5 rounded-xl bg-[#B42318]/5 border border-[#B42318]/20 text-[#B42318] text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -330,78 +277,53 @@ export const Level1GamePage: React.FC = () => {
             </div>
           )}
 
-          {/* Submission Feedback (persistent until the participant presses NEXT) */}
-          {submissionFeedback && (() => {
-            const pts = submissionFeedback.awarded_points;
-            const positive = pts > 0;
-            const negative = pts < 0;
-            const label = positive ? 'Correct' : negative ? 'Incorrect' : 'Answer Recorded';
-            const ptsText = `${pts > 0 ? '+' : ''}${pts} PT`;
-            const ptsColor = positive ? 'text-[#18794E]' : negative ? 'text-[#B42318]' : 'text-[#737373]';
-            return (
-              <div
-                className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                  positive
-                    ? 'bg-[#18794E]/5 border-[#18794E]/20'
-                    : negative
-                    ? 'bg-[#B42318]/5 border-[#B42318]/20'
-                    : 'bg-[#F5F5F2] border-[#E5E5E5]'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  {positive ? (
-                    <CheckCircle2 className="w-5 h-5 text-[#18794E] shrink-0" />
-                  ) : negative ? (
-                    <XCircle className="w-5 h-5 text-[#B42318] shrink-0" />
-                  ) : (
-                    <AlertCircle className="w-5 h-5 text-[#737373] shrink-0" />
-                  )}
-                  <div>
-                    <div className="font-heading font-bold text-sm text-[#171717]">{label}</div>
-                    {submissionFeedback.explanation && (
-                      <p className="text-xs text-[#737373] mt-0.5 font-body">{submissionFeedback.explanation}</p>
-                    )}
+          {/* Result — shown briefly, then auto-advances. No manual Next button. */}
+          {feedback && (
+            <div
+              className={`p-4 rounded-xl border flex items-center justify-between gap-3 ${
+                feedback.timed_out
+                  ? 'bg-[#F5F5F2] border-[#E5E5E5]'
+                  : feedback.awarded_points > 0
+                  ? 'bg-[#18794E]/5 border-[#18794E]/20'
+                  : feedback.awarded_points < 0
+                  ? 'bg-[#B42318]/5 border-[#B42318]/20'
+                  : 'bg-[#F5F5F2] border-[#E5E5E5]'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                {feedback.timed_out ? (
+                  <AlertCircle className="w-5 h-5 text-[#737373] shrink-0" />
+                ) : feedback.awarded_points > 0 ? (
+                  <CheckCircle2 className="w-5 h-5 text-[#18794E] shrink-0" />
+                ) : (
+                  <XCircle className="w-5 h-5 text-[#B42318] shrink-0" />
+                )}
+                <div>
+                  <div className="font-heading font-bold text-sm text-[#171717]">
+                    {feedback.timed_out ? "Time's up" : feedback.awarded_points > 0 ? 'Correct' : feedback.awarded_points < 0 ? 'Incorrect' : 'Recorded'}
+                  </div>
+                  <div className="text-xs text-[#737373] font-body">
+                    Correct answer: <strong className="text-[#171717]">{ANSWER_LABELS[feedback.correct_answer]}</strong>
                   </div>
                 </div>
-                <div className={`font-mono text-sm font-bold shrink-0 ${ptsColor}`}>{ptsText}</div>
               </div>
-            );
-          })()}
-
-          {/* Action Footer: Primary CTA #FFC928 */}
-          <div className="pt-4 border-t border-[#E5E5E5] flex items-center justify-between">
-            <span className="hidden sm:inline-block text-[11px] font-mono text-[#737373]">
-              Keyboard shortcuts: [A/1], [B/2], [C/3]
-            </span>
-
-            {submissionFeedback ? (
-              <button
-                type="button"
-                onClick={handleNextQuestion}
-                className="w-full sm:w-auto px-7 py-3 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all flex items-center justify-center gap-2 shadow-xs ml-auto cursor-pointer"
+              <div
+                className={`font-mono text-sm font-bold shrink-0 ${
+                  feedback.awarded_points > 0 ? 'text-[#18794E]' : feedback.awarded_points < 0 ? 'text-[#B42318]' : 'text-[#737373]'
+                }`}
               >
-                <span>NEXT QUESTION</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={!selectedChoice || isSubmitting}
-                onClick={handleSubmitAnswer}
-                className="w-full sm:w-auto px-7 py-3 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-xs ml-auto cursor-pointer"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-[#171717]" />
-                    <span>RECORDING...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>SUBMIT ANSWER</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
+                {feedback.awarded_points > 0 ? '+' : ''}
+                {feedback.awarded_points} PT
+              </div>
+            </div>
+          )}
+
+          <div className="pt-2 flex items-center justify-between">
+            <span className="hidden sm:inline-block text-[11px] font-mono text-[#737373]">Shortcuts: [A/1] [B/2] [C/3]</span>
+            {feedback && (
+              <span className="text-[11px] font-mono text-[#737373] flex items-center gap-1.5 ml-auto">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Next question…
+              </span>
             )}
           </div>
         </div>

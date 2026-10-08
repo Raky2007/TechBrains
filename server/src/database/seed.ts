@@ -96,11 +96,13 @@ export async function seedDatabase(): Promise<void> {
     ];
 
     const insertQ = db.prepare(`
-      INSERT INTO level1_questions (id, title, prompt, content_type, media_path, correct_answer, explanation, category, difficulty, is_active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO level1_questions (id, title, prompt, content_type, media_path, correct_answer, explanation, category, difficulty, time_limit_seconds, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
     `);
 
     for (const q of questions) {
+      // Each question gets its own timer; harder questions get a little longer.
+      const timeLimit = (q as any).difficulty === 'hard' ? 45 : (q as any).difficulty === 'easy' ? 20 : 30;
       insertQ.run(
         uuidv4(),
         q.title,
@@ -111,6 +113,7 @@ export async function seedDatabase(): Promise<void> {
         q.explanation,
         q.category,
         q.difficulty,
+        timeLimit,
         now,
         now
       );

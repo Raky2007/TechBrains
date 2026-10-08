@@ -73,10 +73,10 @@ export const AdminSettingsPage: React.FC = () => {
     <div className="max-w-4xl mx-auto space-y-8">
       <div>
         <h1 className="text-2xl font-heading font-bold text-[#171717]">
-          Tournament Settings & Maintenance
+          System & Backup
         </h1>
         <p className="text-xs text-[#737373] font-mono mt-0.5">
-          Configure authoritative round durations, initial credits, and create backups.
+          Event-wide settings and data backups. Round timers and configuration live under Round 1 and Round 2.
         </p>
       </div>
 
@@ -101,74 +101,10 @@ export const AdminSettingsPage: React.FC = () => {
       <form onSubmit={handleSaveSettings} className="bg-[#FFFFFF] border border-[#E5E5E5] rounded-2xl p-6 sm:p-8 space-y-6 shadow-xs">
         <h2 className="text-sm font-heading font-bold text-[#171717] uppercase tracking-wider flex items-center gap-2">
           <Settings className="w-4 h-4 text-[#171717]" />
-          <span>Game Parameters</span>
+          <span>Event Parameters</span>
         </h2>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
-              Level 1 Round Duration (Minutes)
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={180}
-              value={settings.level1DurationMinutes}
-              onChange={(e) =>
-                setSettings({ ...settings, level1DurationMinutes: parseInt(e.target.value, 10) })
-              }
-              className="w-full px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
-              Level 2 Round Duration (Minutes)
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={180}
-              value={settings.level2DurationMinutes}
-              onChange={(e) =>
-                setSettings({ ...settings, level2DurationMinutes: parseInt(e.target.value, 10) })
-              }
-              className="w-full px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
-              Initial Allocated Credits per Team
-            </label>
-            <input
-              type="number"
-              min={10}
-              max={10000}
-              value={settings.initialCredits}
-              onChange={(e) =>
-                setSettings({ ...settings, initialCredits: parseInt(e.target.value, 10) })
-              }
-              className="w-full px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
-              Round 2 Maximum Score
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={1000}
-              value={settings.round2MaxScore}
-              onChange={(e) =>
-                setSettings({ ...settings, round2MaxScore: parseInt(e.target.value, 10) })
-              }
-              className="w-full px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
-            />
-          </div>
-
           <div>
             <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
               Tie-Breaker Rule
@@ -180,9 +116,9 @@ export const AdminSettingsPage: React.FC = () => {
               }
               className="w-full px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
             >
-              <option value="default">Default: Level 2 Score, then L1 Accuracy, then Time</option>
-              <option value="l2_first">Level 2 Score Priority</option>
-              <option value="l1_accuracy">Level 1 Accuracy Priority</option>
+              <option value="default">Default: Round 2 Score, then R1 Accuracy, then Time</option>
+              <option value="l2_first">Round 2 Score Priority</option>
+              <option value="l1_accuracy">Round 1 Accuracy Priority</option>
               <option value="time_first">Submission Timestamp Priority</option>
             </select>
           </div>
@@ -193,27 +129,10 @@ export const AdminSettingsPage: React.FC = () => {
           <div className="flex items-center justify-between p-4 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5]">
             <div>
               <span className="text-xs font-heading font-bold text-[#171717] block">
-                Randomize Question Order Per Team
+                Publish Final Results
               </span>
               <span className="text-[11px] text-[#737373]">
-                Shuffles question assignments independently for each participating team.
-              </span>
-            </div>
-            <input
-              type="checkbox"
-              checked={settings.randomizeQuestionOrder}
-              onChange={(e) => setSettings({ ...settings, randomizeQuestionOrder: e.target.checked })}
-              className="w-4 h-4 accent-[#FFC928] cursor-pointer"
-            />
-          </div>
-
-          <div className="flex items-center justify-between p-4 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5]">
-            <div>
-              <span className="text-xs font-heading font-bold text-[#171717] block">
-                Publish Final Leaderboard Results
-              </span>
-              <span className="text-[11px] text-[#737373]">
-                When enabled, the final standings table becomes visible to all participant terminals.
+                When enabled, each team can see its OWN final result. The full standings remain admin-only.
               </span>
             </div>
             <input

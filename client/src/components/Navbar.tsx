@@ -2,7 +2,7 @@ import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { BRANDING } from '@nexus/shared';
 import { ConnectionBadge } from './ConnectionBadge';
-import { Shield, Coins, LogOut } from 'lucide-react';
+import { Coins, LogOut } from 'lucide-react';
 import { removeStoredTeamToken } from '../lib/api';
 
 interface NavbarProps {
@@ -28,9 +28,8 @@ export const Navbar: React.FC<NavbarProps> = ({ team, onLogout }) => {
 
   const navLinks = [
     { label: 'Waiting Room', path: '/waiting' },
-    { label: 'Level 1: AI vs Human', path: '/level1' },
-    { label: 'Level 2: Clues & Credits', path: '/level2' },
-    { label: 'Standings', path: '/leaderboard' },
+    { label: 'Round 1', path: '/level1' },
+    { label: 'Round 2', path: '/level2' },
   ];
 
   return (
@@ -40,14 +39,14 @@ export const Navbar: React.FC<NavbarProps> = ({ team, onLogout }) => {
         <div className="flex items-center gap-6">
           <Link to="/" className="flex items-center gap-2.5 group">
             <div className="w-8 h-8 rounded-lg bg-[#FFC928] text-[#171717] flex items-center justify-center font-heading font-black text-sm shadow-xs">
-              N
+              T
             </div>
             <div>
               <span className="font-heading font-bold text-base tracking-tight text-[#171717]">
                 {BRANDING.shortTitle}
               </span>
               <span className="hidden sm:inline-block text-[11px] font-mono text-[#737373] ml-2 border-l border-[#E5E5E5] pl-2 font-medium">
-                COLLEGIATE TECHNICAL EVENT
+                Department of CSE · DAC
               </span>
             </div>
           </Link>

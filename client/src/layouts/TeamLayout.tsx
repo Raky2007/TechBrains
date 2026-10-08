@@ -73,14 +73,21 @@ export const TeamLayout: React.FC = () => {
       } else if (state.status === 'level2_active' && (location.pathname === '/waiting' || location.pathname === '/level1')) {
         navigate('/level2');
       } else if (state.status === 'completed' || state.settings?.resultsPublished) {
-        if (location.pathname !== '/leaderboard') {
-          // If results published, show leaderboard
-          navigate('/leaderboard');
+        if (location.pathname !== '/result') {
+          // Once results are published, show the team its OWN result only.
+          navigate('/result');
         }
       }
     };
 
+    // Scores-free signal that the admin published final results. Participants
+    // never receive global standings here — only the cue to view their own.
+    const handleResultsPublished = () => {
+      if (location.pathname !== '/result') navigate('/result');
+    };
+
     socket.on('game:state_changed', handleStateChange);
+    socket.on('results:published', handleResultsPublished);
     socket.on('round:started', () => {
       fetchGameState().then((state) => {
         if (state?.current_level === 1) navigate('/level1');
@@ -90,6 +97,7 @@ export const TeamLayout: React.FC = () => {
 
     return () => {
       socket.off('game:state_changed', handleStateChange);
+      socket.off('results:published', handleResultsPublished);
     };
   }, [location.pathname, navigate]);
 

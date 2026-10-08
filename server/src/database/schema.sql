@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS level1_questions (
     explanation TEXT,
     category TEXT,
     difficulty TEXT CHECK(difficulty IN ('easy', 'medium', 'hard') OR difficulty IS NULL),
+    -- TechBrains: each Round 1 question carries its own server-authoritative
+    -- countdown (seconds). The sum of active question timers defines the total
+    -- Round 1 duration; there is no separate overall Round 1 timer.
+    time_limit_seconds INTEGER NOT NULL DEFAULT 30 CHECK(time_limit_seconds > 0),
     is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -70,6 +74,12 @@ CREATE TABLE IF NOT EXISTS team_question_assignments (
     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     question_id TEXT NOT NULL REFERENCES level1_questions(id) ON DELETE CASCADE,
     question_order INTEGER NOT NULL,
+    -- Per-question server-authoritative timing. served_at is set the first time
+    -- the question is delivered to the team; deadline_at = served_at + the
+    -- question's time_limit_seconds. A question with a passed deadline and no
+    -- answer is an authoritative timeout (0 points, no team_answers row).
+    served_at TEXT,
+    deadline_at TEXT,
     UNIQUE(round_id, team_id, question_order),
     UNIQUE(round_id, team_id, question_id)
 );

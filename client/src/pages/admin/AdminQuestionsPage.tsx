@@ -1,35 +1,35 @@
 import React, { useState, useEffect } from 'react';
 import { apiFetch } from '../../lib/api';
 import { Level1Question, ContentType, Level1AnswerChoice } from '@nexus/shared';
-import {
-  Plus,
-  Trash2,
-  Eye,
-  Edit2,
-  AlertCircle,
-  Loader2,
-  X
-} from 'lucide-react';
+import { Plus, Trash2, Edit2, AlertCircle, Loader2, X, Clock } from 'lucide-react';
 
+const ANSWER_LABELS: Record<Level1AnswerChoice, string> = {
+  AI: 'AI Made',
+  HUMAN: 'Human Made',
+  CANT_DEFINE: "Can't Determine"
+};
+
+/**
+ * Simplified TechBrains Round 1 question editor.
+ *
+ * The editor intentionally exposes only what a Round 1 question needs: the
+ * content/media, the correct AI/Human answer, and the per-question timer.
+ * The deprecated prompt / category / difficulty / explanation / status fields
+ * are no longer shown (the columns remain in the database for compatibility).
+ */
 export const AdminQuestionsPage: React.FC = () => {
   const [questions, setQuestions] = useState<Level1Question[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const [previewQuestion, setPreviewQuestion] = useState<Level1Question | null>(null);
 
-  // Form State
+  // Form state (simplified)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState<string>('');
-  const [prompt, setPrompt] = useState<string>('');
   const [contentType, setContentType] = useState<ContentType>('text');
   const [mediaPath, setMediaPath] = useState<string>('');
   const [correctAnswer, setCorrectAnswer] = useState<Level1AnswerChoice>('AI');
-  const [explanation, setExplanation] = useState<string>('');
-  const [category, setCategory] = useState<string>('Synthetic Media');
-  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
-  const [isActive, setIsActive] = useState<number>(1);
+  const [timeLimit, setTimeLimit] = useState<number>(30);
 
-  // Upload state
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -51,14 +51,10 @@ export const AdminQuestionsPage: React.FC = () => {
   const resetForm = () => {
     setEditingId(null);
     setTitle('');
-    setPrompt('');
     setContentType('text');
     setMediaPath('');
     setCorrectAnswer('AI');
-    setExplanation('');
-    setCategory('Synthetic Media');
-    setDifficulty('medium');
-    setIsActive(1);
+    setTimeLimit(30);
     setFormError(null);
   };
 
@@ -70,14 +66,10 @@ export const AdminQuestionsPage: React.FC = () => {
   const openEditModal = (q: Level1Question) => {
     setEditingId(q.id);
     setTitle(q.title);
-    setPrompt(q.prompt);
     setContentType(q.content_type);
     setMediaPath(q.media_path || '');
     setCorrectAnswer(q.correct_answer);
-    setExplanation(q.explanation || '');
-    setCategory(q.category || '');
-    setDifficulty(q.difficulty || 'medium');
-    setIsActive(q.is_active);
+    setTimeLimit(q.time_limit_seconds ?? 30);
     setFormError(null);
     setIsModalOpen(true);
   };
@@ -85,10 +77,8 @@ export const AdminQuestionsPage: React.FC = () => {
   const handleFileUpload = async (file: File) => {
     setIsUploading(true);
     setFormError(null);
-
     const formData = new FormData();
     formData.append('media', file);
-
     try {
       const res = await apiFetch<{ success: boolean; media_path: string }>('/api/admin/upload', {
         method: 'POST',
@@ -106,31 +96,22 @@ export const AdminQuestionsPage: React.FC = () => {
     e.preventDefault();
     setFormError(null);
 
+    // Only the fields a Round 1 question needs. is_active defaults to active.
     const payload = {
       title: title.trim(),
-      prompt: prompt.trim(),
       content_type: contentType,
       media_path: mediaPath || null,
       correct_answer: correctAnswer,
-      explanation: explanation.trim() || null,
-      category: category.trim() || null,
-      difficulty,
-      is_active: isActive
+      time_limit_seconds: timeLimit,
+      is_active: 1
     };
 
     try {
       if (editingId) {
-        await apiFetch(`/api/admin/questions/${editingId}`, {
-          method: 'PUT',
-          body: JSON.stringify(payload)
-        });
+        await apiFetch(`/api/admin/questions/${editingId}`, { method: 'PUT', body: JSON.stringify(payload) });
       } else {
-        await apiFetch('/api/admin/questions', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
+        await apiFetch('/api/admin/questions', { method: 'POST', body: JSON.stringify(payload) });
       }
-
       setIsModalOpen(false);
       resetForm();
       await fetchQuestions();
@@ -151,122 +132,90 @@ export const AdminQuestionsPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Top Action Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-heading font-bold text-[#171717]">
-            Level 1 Questions Pool
-          </h1>
+          <h1 className="text-2xl font-heading font-bold text-[#171717]">Round 1 · Questions</h1>
           <p className="text-xs text-[#737373] font-mono mt-0.5">
-            Manage forensic discrimination artifacts for Level 1 rounds.
+            Each question holds its content/media, the correct answer, and its own timer.
           </p>
         </div>
-
-        {/* Primary CTA: #FFC928 */}
         <button
           type="button"
           onClick={openCreateModal}
           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-heading font-bold uppercase tracking-wider text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all shadow-xs self-start sm:self-auto cursor-pointer"
         >
           <Plus className="w-4 h-4 text-[#171717]" />
-          <span>UPLOAD QUESTION</span>
+          <span>Add Question</span>
         </button>
       </div>
 
-      {/* Questions Table */}
       <div className="bg-[#FFFFFF] border border-[#E5E5E5] rounded-2xl overflow-hidden shadow-xs">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs font-body">
             <thead className="bg-[#F5F5F2] text-[#737373] font-mono text-[11px] uppercase tracking-wider border-b border-[#E5E5E5]">
               <tr>
-                <th className="py-3 px-4">Title</th>
+                <th className="py-3 px-4">Question</th>
                 <th className="py-3 px-4">Type</th>
                 <th className="py-3 px-4">Correct Answer</th>
-                <th className="py-3 px-4">Category</th>
-                <th className="py-3 px-4">Difficulty</th>
-                <th className="py-3 px-4">Status</th>
+                <th className="py-3 px-4 text-center">Time</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E5E5E5]">
-              {questions.map((q, idx) => {
-                const isEven = idx % 2 === 1;
-                return (
-                  <tr key={q.id} className={`transition-colors hover:bg-[#FFF0D6]/40 ${isEven ? 'bg-[#F5F5F2]/40' : 'bg-[#FFFFFF]'}`}>
-                    <td className="py-3 px-4 font-heading font-medium text-[#171717] max-w-xs truncate">
-                      {q.title}
-                    </td>
-                    <td className="py-3 px-4 font-mono uppercase text-[11px] text-[#737373]">
-                      {q.content_type}
-                    </td>
-                    <td className="py-3 px-4 font-mono font-bold">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] border ${
-                          q.correct_answer === 'AI'
-                            ? 'bg-[#FFC928]/20 text-[#171717] border-[#FFC928]'
-                            : q.correct_answer === 'HUMAN'
-                            ? 'bg-[#18794E]/10 text-[#18794E] border-[#18794E]/30'
-                            : 'bg-[#F5F5F2] text-[#737373] border-[#E5E5E5]'
-                        }`}
-                      >
-                        {q.correct_answer}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-[#737373] font-mono text-[11px]">
-                      {q.category || '—'}
-                    </td>
-                    <td className="py-3 px-4 font-mono uppercase text-[10px] text-[#737373]">
-                      {q.difficulty || 'medium'}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span
-                        className={`px-2 py-0.5 rounded-full font-mono text-[10px] font-bold border ${
-                          q.is_active
-                            ? 'bg-[#18794E]/10 text-[#18794E] border-[#18794E]/20'
-                            : 'bg-[#F5F5F2] text-[#737373] border-[#E5E5E5]'
-                        }`}
-                      >
-                        {q.is_active ? 'ACTIVE' : 'ARCHIVED'}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-right space-x-1 whitespace-nowrap">
-                      <button
-                        onClick={() => setPreviewQuestion(q)}
-                        title="Preview Question"
-                        className="p-1.5 rounded-lg text-[#737373] hover:text-[#171717] hover:bg-[#F5F5F2] transition-colors cursor-pointer"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => openEditModal(q)}
-                        title="Edit Question"
-                        className="p-1.5 rounded-lg text-[#737373] hover:text-[#171717] hover:bg-[#F5F5F2] transition-colors cursor-pointer"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(q.id)}
-                        title="Delete / Archive Question"
-                        className="p-1.5 rounded-lg text-[#737373] hover:text-[#B42318] hover:bg-[#B42318]/10 transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {questions.map((q, idx) => (
+                <tr key={q.id} className={`transition-colors hover:bg-[#FFF0D6]/40 ${idx % 2 === 1 ? 'bg-[#F5F5F2]/40' : 'bg-[#FFFFFF]'}`}>
+                  <td className="py-3 px-4 font-heading font-medium text-[#171717] max-w-md truncate">{q.title}</td>
+                  <td className="py-3 px-4 font-mono uppercase text-[11px] text-[#737373]">{q.content_type}</td>
+                  <td className="py-3 px-4 font-mono font-bold">
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] border ${
+                        q.correct_answer === 'AI'
+                          ? 'bg-[#FFC928]/20 text-[#171717] border-[#FFC928]'
+                          : q.correct_answer === 'HUMAN'
+                          ? 'bg-[#18794E]/10 text-[#18794E] border-[#18794E]/30'
+                          : 'bg-[#F5F5F2] text-[#737373] border-[#E5E5E5]'
+                      }`}
+                    >
+                      {ANSWER_LABELS[q.correct_answer]}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4 text-center font-mono text-[#171717]">{q.time_limit_seconds ?? 30}s</td>
+                  <td className="py-3 px-4 text-right space-x-1 whitespace-nowrap">
+                    <button
+                      onClick={() => openEditModal(q)}
+                      title="Edit Question"
+                      className="p-1.5 rounded-lg text-[#737373] hover:text-[#171717] hover:bg-[#F5F5F2] transition-colors cursor-pointer"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(q.id)}
+                      title="Delete / Archive Question"
+                      className="p-1.5 rounded-lg text-[#737373] hover:text-[#B42318] hover:bg-[#B42318]/10 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {questions.length === 0 && !isLoading && (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-xs font-mono text-[#737373]">
+                    No questions yet. Click “Add Question” to create one.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Upload / Edit Question Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs overflow-y-auto">
-          <div className="bg-[#FFFFFF] border border-[#E5E5E5] rounded-2xl p-6 sm:p-8 max-w-2xl w-full my-8 shadow-xl relative">
+          <div className="bg-[#FFFFFF] border border-[#E5E5E5] rounded-2xl p-6 sm:p-8 max-w-xl w-full my-8 shadow-xl relative">
             <div className="flex items-center justify-between pb-4 border-b border-[#E5E5E5]">
               <h2 className="text-lg font-heading font-bold text-[#171717]">
-                {editingId ? 'Edit Level 1 Question' : 'Upload Level 1 Question'}
+                {editingId ? 'Edit Question' : 'Add Question'}
               </h2>
               <button onClick={() => setIsModalOpen(false)} className="text-[#737373] hover:text-[#171717] cursor-pointer">
                 <X className="w-5 h-5" />
@@ -276,28 +225,14 @@ export const AdminQuestionsPage: React.FC = () => {
             <form onSubmit={handleSaveQuestion} className="space-y-4 pt-4">
               <div>
                 <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                  Question Title
+                  Question
                 </label>
-                <input
-                  type="text"
+                <textarea
+                  rows={2}
                   required
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  placeholder="e.g. Subject Sigma: Neural Portrait Synthesis"
-                  className="w-full px-3.5 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs focus:outline-none focus:border-[#171717]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                  Prompt & Instructions
-                </label>
-                <textarea
-                  rows={3}
-                  required
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="Analyze the artifact below. Examine edge artifacts, specular reflections, and chromatic markers."
+                  placeholder="The content to judge (or a short label for the media below)."
                   className="w-full p-3 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs focus:outline-none focus:border-[#171717] leading-relaxed"
                 />
               </div>
@@ -317,28 +252,44 @@ export const AdminQuestionsPage: React.FC = () => {
                     <option value="video">Video File</option>
                   </select>
                 </div>
-
                 <div>
                   <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                    Correct Authoritative Answer
+                    Correct Answer
                   </label>
                   <select
                     value={correctAnswer}
                     onChange={(e) => setCorrectAnswer(e.target.value as Level1AnswerChoice)}
                     className="w-full px-3 py-2 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs focus:outline-none focus:border-[#171717] font-semibold"
                   >
-                    <option value="AI">AI Made (+1 pt)</option>
-                    <option value="HUMAN">Human Made (+1 pt)</option>
-                    <option value="CANT_DEFINE">Can't Define (0 pts)</option>
+                    <option value="AI">AI Made (+1)</option>
+                    <option value="HUMAN">Human Made (+1)</option>
+                    <option value="CANT_DEFINE">Can't Determine (0)</option>
                   </select>
                 </div>
               </div>
 
-              {/* Media File Upload */}
+              <div>
+                <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5" /> Question Time (seconds)
+                </label>
+                <input
+                  type="number"
+                  min={3}
+                  max={600}
+                  required
+                  value={timeLimit}
+                  onChange={(e) => setTimeLimit(parseInt(e.target.value, 10) || 0)}
+                  className="w-full max-w-[160px] px-3.5 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
+                />
+                <p className="text-[11px] text-[#737373] mt-1">
+                  The participant has this long to answer. Total Round 1 length is the sum of all question timers.
+                </p>
+              </div>
+
               {contentType !== 'text' && (
                 <div className="space-y-2 p-4 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5]">
                   <label className="block text-xs font-heading font-bold text-[#171717] uppercase tracking-wider">
-                    Select {contentType.toUpperCase()} Media File (JPG, PNG, WEBP, MP4, WEBM)
+                    {contentType.toUpperCase()} Media File
                   </label>
                   <input
                     type="file"
@@ -352,70 +303,12 @@ export const AdminQuestionsPage: React.FC = () => {
                   {isUploading && (
                     <div className="flex items-center gap-2 text-xs font-mono text-[#18794E]">
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Validating MIME signature and uploading...</span>
+                      <span>Uploading…</span>
                     </div>
                   )}
-                  {mediaPath && (
-                    <div className="text-xs font-mono text-[#18794E] truncate font-semibold">
-                      ✓ Uploaded: {mediaPath}
-                    </div>
-                  )}
+                  {mediaPath && <div className="text-xs font-mono text-[#18794E] truncate font-semibold">✓ {mediaPath}</div>}
                 </div>
               )}
-
-              <div>
-                <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                  Explanation & Forensic Markers (Revealed after submission)
-                </label>
-                <textarea
-                  rows={2}
-                  value={explanation}
-                  onChange={(e) => setExplanation(e.target.value)}
-                  placeholder="Explain why this artifact is synthetic or authentic."
-                  className="w-full p-3 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs focus:outline-none focus:border-[#171717] leading-relaxed"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                    Category
-                  </label>
-                  <input
-                    type="text"
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                    Difficulty
-                  </label>
-                  <select
-                    value={difficulty}
-                    onChange={(e) => setDifficulty(e.target.value as any)}
-                    className="w-full px-3 py-2 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs"
-                  >
-                    <option value="easy">Easy</option>
-                    <option value="medium">Medium</option>
-                    <option value="hard">Hard</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                    Status
-                  </label>
-                  <select
-                    value={isActive}
-                    onChange={(e) => setIsActive(parseInt(e.target.value, 10))}
-                    className="w-full px-3 py-2 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs"
-                  >
-                    <option value={1}>Active Pool</option>
-                    <option value={0}>Archived</option>
-                  </select>
-                </div>
-              </div>
 
               {formError && (
                 <div className="p-3 rounded-lg bg-[#B42318]/5 border border-[#B42318]/20 text-[#B42318] text-xs flex items-center gap-2">
@@ -440,33 +333,6 @@ export const AdminQuestionsPage: React.FC = () => {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Preview Modal */}
-      {previewQuestion && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-          <div className="bg-[#FFFFFF] border border-[#E5E5E5] rounded-2xl p-6 sm:p-8 max-w-lg w-full shadow-xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-[#E5E5E5]">
-              <span className="text-xs font-mono text-[#18794E] font-bold">QUESTION PREVIEW</span>
-              <button onClick={() => setPreviewQuestion(null)} className="text-[#737373] hover:text-[#171717] cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <h3 className="text-lg font-heading font-bold text-[#171717]">{previewQuestion.title}</h3>
-            <p className="text-xs text-[#737373] leading-relaxed whitespace-pre-wrap">{previewQuestion.prompt}</p>
-            {previewQuestion.media_path && (
-              <div className="rounded-xl overflow-hidden border border-[#E5E5E5] bg-[#F5F5F2] p-1">
-                <img src={previewQuestion.media_path} alt={previewQuestion.title} className="max-h-64 w-full object-contain rounded" />
-              </div>
-            )}
-            <div className="p-3.5 rounded-lg bg-[#F5F5F2] border border-[#E5E5E5] space-y-1 text-xs font-mono">
-              <div>Correct Answer: <strong className="text-[#171717]">{previewQuestion.correct_answer}</strong></div>
-              {previewQuestion.explanation && (
-                <div className="text-[#737373] font-body text-xs pt-1">{previewQuestion.explanation}</div>
-              )}
-            </div>
           </div>
         </div>
       )}

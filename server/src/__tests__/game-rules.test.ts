@@ -96,6 +96,7 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
       explanation: 'test',
       category: 'Test',
       difficulty: 'easy',
+      time_limit_seconds: 30,
       is_active: 1,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -585,6 +586,145 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
     const bState = GameService.getTeamPrivateState(b.id);
     expect(aState.level1?.answered_count).toBe(1);
     expect(bState.level1?.answered_count).toBe(0); // B sees only its own progress
+  });
+
+  // ================= TechBrains Round 1 per-question timer & qualification =================
+
+  function latestL1RoundId(): string {
+    return (getDb().prepare("SELECT id FROM rounds WHERE level = 1 ORDER BY created_at DESC LIMIT 1").get() as any).id;
+  }
+
+  it('R1-T1. Each Round 1 question carries its own persisted timer, surfaced server-side', () => {
+    const { team } = GameService.registerTeam('Timer Persist');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    GameService.startRound(admin.id, 1);
+
+    const state = GameService.getTeamPrivateState(team.id);
+    const q = state.level1?.current_question;
+    expect(q).toBeTruthy();
+    // The per-question timer comes from the DB, not a hard-coded client value.
+    const dbQ = getDb().prepare('SELECT time_limit_seconds FROM level1_questions WHERE id = ?').get(q!.id) as { time_limit_seconds: number };
+    expect(q!.time_limit_seconds).toBe(dbQ.time_limit_seconds);
+    expect(q!.time_limit_seconds).toBeGreaterThan(0);
+    // The current question carries a server-authoritative deadline.
+    expect(q!.deadline_at).toBeTruthy();
+    // server_time is provided for client reconciliation.
+    expect(state.level1?.server_time).toBeTruthy();
+  });
+
+  it('R1-T2. Correct answer is hidden before submission and returned only after acceptance', () => {
+    const { team } = GameService.registerTeam('Reveal Rules');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    GameService.startRound(admin.id, 1);
+
+    const state = GameService.getTeamPrivateState(team.id);
+    const q = state.level1!.current_question!;
+    // Hidden before submission (no leak via private state).
+    expect((q as any).correct_answer).toBeUndefined();
+
+    const dbQ = getDb().prepare('SELECT correct_answer FROM level1_questions WHERE id = ?').get(q.id) as { correct_answer: string };
+    const res = GameService.submitLevel1Answer(team.id, q.id, 'AI');
+    // Returned after acceptance, only in this team's own submit response.
+    expect(res.correct_answer).toBe(dbQ.correct_answer);
+  });
+
+  it('R1-T3. A timed-out question gives 0, cannot be answered later, and is skipped', () => {
+    const { team } = GameService.registerTeam('Timeout Team');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    GameService.startRound(admin.id, 1);
+
+    // Serve the first question (stamps served_at + deadline_at).
+    const first = GameService.getTeamPrivateState(team.id).level1!.current_question!;
+    const roundId = latestL1RoundId();
+
+    // Force this question's deadline into the past → authoritative timeout.
+    getDb()
+      .prepare('UPDATE team_question_assignments SET deadline_at = ? WHERE round_id = ? AND team_id = ? AND question_id = ?')
+      .run(new Date(Date.now() - 1000).toISOString(), roundId, team.id, first.id);
+
+    // It can no longer be answered.
+    expect(() => GameService.submitLevel1Answer(team.id, first.id, 'AI')).toThrow(/time is up|timed out/i);
+
+    // Timeout awards 0 (no team_answers row, score unchanged).
+    const score = (getDb().prepare('SELECT level1_score FROM teams WHERE id = ?').get(team.id) as any).level1_score;
+    expect(score).toBe(0);
+    const answerRows = (getDb().prepare('SELECT COUNT(*) as c FROM team_answers WHERE team_id = ?').get(team.id) as any).c;
+    expect(answerRows).toBe(0);
+
+    // The server skips the timed-out question and serves the next one.
+    const next = GameService.getTeamPrivateState(team.id).level1!.current_question;
+    expect(next).toBeTruthy();
+    expect(next!.id).not.toBe(first.id);
+  });
+
+  it('R1-T4. A refresh during the result window cannot re-answer an answered question', () => {
+    const { team } = GameService.registerTeam('No Double Score');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    GameService.startRound(admin.id, 1);
+
+    const q = GameService.getTeamPrivateState(team.id).level1!.current_question!;
+    GameService.submitLevel1Answer(team.id, q.id, 'AI');
+
+    // Simulated refresh: re-fetch state, then a duplicate submit must be rejected.
+    const refreshed = GameService.getTeamPrivateState(team.id);
+    expect(refreshed.level1?.current_question?.id).not.toBe(q.id); // advanced to next
+    expect(() => GameService.submitLevel1Answer(team.id, q.id, 'HUMAN')).toThrow(/already submitted/i);
+  });
+
+  it('R1-T5. Qualification: score >= cutoff qualifies; score < cutoff does not', () => {
+    const { team } = GameService.registerTeam('Cutoff Logic');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+    // Cutoff of 1 with a team score of 0 → not qualified.
+    GameService.updateSettings(admin.id, { round1CutoffScore: 1 });
+    GameService.startRound(admin.id, 1);
+    GameService.endRound(admin.id, 1);
+
+    let t = getDb().prepare('SELECT * FROM teams WHERE id = ?').get(team.id) as any;
+    let settings = GameService.getGameSession().settings;
+    expect(settings.round1CutoffScore).toBe(1); // persisted
+    expect(GameService.isTeamQualifiedForRound2(t, settings)).toBe(false);
+
+    // Raise the team's score to meet the cutoff → qualified.
+    getDb().prepare('UPDATE teams SET level1_score = 1 WHERE id = ?').run(team.id);
+    t = getDb().prepare('SELECT * FROM teams WHERE id = ?').get(team.id) as any;
+    expect(GameService.isTeamQualifiedForRound2(t, settings)).toBe(true);
+  });
+
+  it('R1-T6. An unqualified team is blocked from Round 2 (state + every mutation)', () => {
+    const { team } = GameService.registerTeam('Blocked Team');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+    GameService.updateSettings(admin.id, { round1CutoffScore: 10 }); // team will have score 0
+    GameService.startRound(admin.id, 1);
+    GameService.endRound(admin.id, 1);
+    GameService.startRound(admin.id, 2);
+
+    // Private state reports not-qualified and exposes NO Round 2 data.
+    const state = GameService.getTeamPrivateState(team.id);
+    expect(state.round2_qualified).toBe(false);
+    expect(state.level2).toBeUndefined();
+
+    // Every Round 2 mutation is rejected server-side.
+    const clue = getDb().prepare('SELECT * FROM clues WHERE is_active = 1 LIMIT 1').get() as any;
+    expect(() => GameService.unlockLevel2Clue(team.id, clue.id)).toThrow(/not qualified/i);
+    expect(() => GameService.replayCaseMedia(team.id, 'op-unqual-1')).toThrow(/not qualified/i);
+    expect(() => GameService.submitConclusion(team.id, 'A sufficiently long final answer for testing.')).toThrow(/not qualified/i);
+  });
+
+  it('R1-T7. A qualified team can enter Round 2 and receives case data', () => {
+    const { team } = GameService.registerTeam('Allowed Team');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+    GameService.updateSettings(admin.id, { round1CutoffScore: 0 }); // score 0 >= 0 → qualified
+    GameService.startRound(admin.id, 1);
+    GameService.endRound(admin.id, 1);
+    GameService.startRound(admin.id, 2);
+
+    const state = GameService.getTeamPrivateState(team.id);
+    expect(state.round2_qualified).toBe(true);
+    expect(state.level2).toBeDefined();
+    expect(state.level2?.clues.length).toBeGreaterThan(0);
   });
 
   it('13. Startup recovery cleans up expired rounds', () => {

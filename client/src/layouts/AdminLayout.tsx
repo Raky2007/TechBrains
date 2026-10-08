@@ -12,6 +12,7 @@ import {
   FileCheck2,
   Trophy,
   Settings,
+  Database,
   LogOut,
   Shield,
   Menu,
@@ -53,15 +54,37 @@ export const AdminLayout: React.FC = () => {
     navigate('/admin/login');
   };
 
-  const navItems = [
-    { label: 'Overview', to: '/admin', icon: LayoutDashboard, end: true },
-    { label: 'Live Game Control', to: '/admin/control', icon: Radio },
-    { label: 'Level 1 Questions', to: '/admin/questions', icon: HelpCircle },
-    { label: 'Level 2 Cases & Clues', to: '/admin/cases', icon: FolderSearch },
-    { label: 'Registered Teams', to: '/admin/teams', icon: Users },
-    { label: 'Submissions', to: '/admin/submissions', icon: FileCheck2 },
-    { label: 'Leaderboard', to: '/admin/leaderboard', icon: Trophy },
-    { label: 'Settings', to: '/admin/settings', icon: Settings },
+  // Primary structure is organised around the two rounds (Questions + Settings
+  // each), with event-wide monitoring/controls kept in their own section.
+  const navSections: {
+    heading: string;
+    items: { label: string; to: string; icon: typeof LayoutDashboard; end?: boolean }[];
+  }[] = [
+    {
+      heading: 'Round 1',
+      items: [
+        { label: 'Questions', to: '/admin/questions', icon: HelpCircle },
+        { label: 'Settings', to: '/admin/round1', icon: Settings },
+      ],
+    },
+    {
+      heading: 'Round 2',
+      items: [
+        { label: 'Questions', to: '/admin/cases', icon: FolderSearch },
+        { label: 'Settings', to: '/admin/round2', icon: Settings },
+      ],
+    },
+    {
+      heading: 'Event',
+      items: [
+        { label: 'Overview', to: '/admin', icon: LayoutDashboard, end: true },
+        { label: 'Live Game Control', to: '/admin/control', icon: Radio },
+        { label: 'Registered Teams', to: '/admin/teams', icon: Users },
+        { label: 'Submissions', to: '/admin/submissions', icon: FileCheck2 },
+        { label: 'Leaderboard', to: '/admin/leaderboard', icon: Trophy },
+        { label: 'System & Backup', to: '/admin/settings', icon: Database },
+      ],
+    },
   ];
 
   if (isLoading) {
@@ -78,7 +101,7 @@ export const AdminLayout: React.FC = () => {
       <header className="md:hidden flex items-center justify-between p-4 bg-[#F5F5F2] border-b border-[#E5E5E5]">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-[#FFC928] text-[#171717] flex items-center justify-center font-bold font-mono text-xs">
-            N
+            T
           </div>
           <span className="font-heading font-bold text-sm tracking-tight text-[#171717]">{BRANDING.shortTitle} ADMIN</span>
         </div>
@@ -116,29 +139,36 @@ export const AdminLayout: React.FC = () => {
           </div>
         </div>
 
-        {/* Navigation list: Active navigation Black text with Yellow indicator #FFC928 */}
-        <nav className="flex-1 px-3 py-4 space-y-1.5 overflow-y-auto">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                onClick={() => setIsMobileMenuOpen(false)}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all ${
-                    isActive
-                      ? 'bg-[#FFC928] text-[#171717] font-bold shadow-xs'
-                      : 'text-[#737373] hover:text-[#171717] hover:bg-[#E5E5E5]/60 font-medium'
-                  }`
-                }
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span>{item.label}</span>
-              </NavLink>
-            );
-          })}
+        {/* Navigation list: grouped by Round 1 / Round 2 / Event */}
+        <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
+          {navSections.map((section) => (
+            <div key={section.heading} className="space-y-1.5">
+              <span className="px-3.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[#A3A3A3] block">
+                {section.heading}
+              </span>
+              {section.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end}
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className={({ isActive }) =>
+                      `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all ${
+                        isActive
+                          ? 'bg-[#FFC928] text-[#171717] font-bold shadow-xs'
+                          : 'text-[#737373] hover:text-[#171717] hover:bg-[#E5E5E5]/60 font-medium'
+                      }`
+                    }
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </NavLink>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         {/* Footer info & logout */}
