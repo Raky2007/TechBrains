@@ -40,7 +40,7 @@ export async function setupDatabase(): Promise<void> {
     db.prepare(`
       INSERT INTO game_sessions (id, name, status, current_level, settings_json, created_at, updated_at)
       VALUES (?, ?, 'idle', NULL, ?, ?, ?)
-    `).run(sessionId, 'NEXUS LAN Championship Session', settingsJson, now, now);
+    `).run(sessionId, 'TechBrains Championship Session', settingsJson, now, now);
 
     console.log(`[Database] Created primary game session: ${sessionId}`);
   } else {

@@ -1,12 +1,12 @@
-# NEXUS // AI INVESTIGATION
-### Collegiate Synthetic Intelligence & Forensics Challenge
+# TECHBRAINS // LIVE AI INVESTIGATION
+### Collegiate Technical Event Challenge
 **Authoritative LAN-Based Multiplayer Forensic Investigation Game**
 
 ---
 
 ## 1. Architectural Overview
 
-NEXUS is a self-hosted, offline-ready web application engineered to run on a single authoritative host laptop and support **30+ concurrent team workstations** over a local college Ethernet/LAN switch. It requires zero cloud accounts, external database servers, or internet connectivity.
+TechBrains is a self-hosted, offline-ready web application engineered to run on a single authoritative host laptop and support **30+ concurrent team workstations** over a local college Ethernet/LAN switch. It requires zero cloud accounts, external database servers, or internet connectivity.
 
 - **Frontend**: React 18 + TypeScript + Vite, styled with Tailwind CSS, Lucide React icons, and Framer Motion transitions.
 - **Backend**: Node.js + Express bound to `0.0.0.0` (configurable port defaulting to `3000`).
@@ -19,18 +19,18 @@ NEXUS is a self-hosted, offline-ready web application engineered to run on a sin
 
 ## 2. Visual Identity & Design System
 
-- **Primary Background**: `#0B0D12`
-- **Secondary Background**: `#11141B`
-- **Card Background**: `#171A23`
-- **Elevated Surface**: `#20232D`
-- **Primary Violet**: `#8B7CFF` (Primary actions, selection states, active navigation)
-- **Secondary Cyan**: `#51D9E8` (Live connection indicators, active timers)
-- **Warm Amber**: `#F0B86E` (Forensic credits, clue costs)
-- **Primary Text**: `#F0F0F5`
-- **Secondary Text**: `#A8ADBC`
-- **Borders**: `#2B2F3A`
-- **Success / Error**: `#66D9A6` / `#FF6B78`
-- **Typography**: Space Grotesk (headings), Inter (body/forms), JetBrains Mono (timers, scores, credit balances). Offline local system fallbacks are configured.
+- **Primary Background**: `#FFFFFF`
+- **Secondary Background**: `#F5F5F2`
+- **Card Background**: `#FFFFFF`
+- **Elevated Surface**: `#F5F5F2`
+- **Primary Yellow**: `#FFC928` (Primary actions, selection states, active navigation)
+- **Secondary Orange**: `#FF8A24` (Live connection indicators, active timers)
+- **Warm Amber**: `#FFF0D6` / `#B34400` (Investigation credits, clue costs)
+- **Primary Text**: `#171717`
+- **Secondary Text**: `#737373`
+- **Borders**: `#E5E5E5`
+- **Success / Error**: `#18794E` / `#B42318`
+- **Typography**: Sora / Space Grotesk (headings), Inter (body/forms), JetBrains Mono (timers, scores, credit balances).
 
 ---
 
@@ -46,18 +46,18 @@ Upon startup, the server automatically initializes SQLite (`nexus.db`), creates 
 
 ```
 ===============================================================
-  ★ NEXUS // AI INVESTIGATION ★
-  LAN CHAMPIONSHIP EDITION - AUTHORITATIVE HOST SERVER
+  ★ TECHBRAINS ★
+  COLLEGE TECHNICAL EVENT - AUTHORITATIVE HOST SERVER
 ===============================================================
   Authoritative Host listening on: 0.0.0.0:3000
   Local Access:      http://localhost:3000
-  Primary LAN IP:    http://192.168.1.8:3000
+  Primary LAN IP:    http://10.42.0.14:3000
 
   Participant Access URL (Share with 30 Teams on LAN):
-  >>> http://192.168.1.8:3000 <<<
+  >>> http://10.42.0.14:3000 <<<
 
   Admin Portal:
-  >>> http://192.168.1.8:3000/admin/login <<<
+  >>> http://10.42.0.14:3000/admin/login <<<
   Default Admin: admin
 ===============================================================
 ```
@@ -74,7 +74,7 @@ Upon startup, the server automatically initializes SQLite (`nexus.db`), creates 
 | `npm run db` | Initializes SQLite tables and creates default admin and primary game session. |
 | `npm run db:seed` | Populates sample Level 1 questions and sample Level 2 forensic investigation case with clues. |
 | `npm run db:backup` | Creates an authoritative point-in-time backup of `nexus.db` and media uploads under `server/backups/`. |
-| `npm test` | Runs the automated test suite verifying all 13 critical rules and acceptance criteria via Vitest. |
+| `npm test` | Runs the automated test suite verifying all critical rules and acceptance criteria via Vitest. |
 
 ---
 
@@ -84,10 +84,10 @@ Upon startup, the server automatically initializes SQLite (`nexus.db`), creates 
 To allow the 30 team computers to reach the host laptop over LAN, open PowerShell as **Administrator** on the host laptop and run:
 
 ```powershell
-New-NetFirewallRule -DisplayName "NEXUS LAN Game Server" -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow
+New-NetFirewallRule -DisplayName "TechBrains LAN Game Server" -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow
 ```
 
-*(To remove the rule after the event: `Remove-NetFirewallRule -DisplayName "NEXUS LAN Game Server"`)*
+*(To remove the rule after the event: `Remove-NetFirewallRule -DisplayName "TechBrains LAN Game Server"`)*
 
 ### B. Finding the Host Laptop's LAN IPv4 Address
 1. The host server automatically detects and prints the primary LAN IPv4 address on startup.

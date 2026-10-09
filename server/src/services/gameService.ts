@@ -51,7 +51,7 @@ export class GameService {
       db.prepare(`
         INSERT INTO game_sessions (id, name, status, current_level, settings_json, created_at, updated_at)
         VALUES (?, ?, 'idle', NULL, ?, ?, ?)
-      `).run(sessionId, 'NEXUS LAN Championship Session', settingsJson, now, now);
+      `).run(sessionId, 'TechBrains Championship Session', settingsJson, now, now);
 
       session = db.prepare('SELECT * FROM game_sessions WHERE id = ?').get(sessionId) as GameSession;
     }
@@ -463,7 +463,7 @@ export class GameService {
     db.prepare(`
       INSERT INTO game_sessions (id, name, status, current_level, settings_json, created_at, updated_at)
       VALUES (?, ?, 'idle', NULL, ?, ?, ?)
-    `).run(newSessionId, `NEXUS Session ${new Date().toLocaleTimeString()}`, settingsJson, now, now);
+    `).run(newSessionId, `TechBrains Session ${new Date().toLocaleTimeString()}`, settingsJson, now, now);
 
     logAuditAction(adminUserId, 'RESET_GAME', 'game_sessions', newSessionId);
     return db.prepare('SELECT * FROM game_sessions WHERE id = ?').get(newSessionId) as GameSession;
@@ -1352,9 +1352,9 @@ export class GameService {
   /**
    * Get the current leaderboard
    */
-  static getLeaderboard() {
+  static getLeaderboard(options: { includeBanned?: boolean } = {}) {
     const { session, settings } = this.getGameSession();
-    return calculateAuthoritativeLeaderboard(session.id, settings);
+    return calculateAuthoritativeLeaderboard(session.id, settings, options);
   }
 
   /**
@@ -1367,8 +1367,13 @@ export class GameService {
    * leaderboard remains admin-only.
    */
   static getTeamResult(teamId: string) {
+    const db = getDb();
+    const team = db.prepare('SELECT is_banned FROM teams WHERE id = ?').get(teamId) as any;
+    if (team?.is_banned) {
+      return null;
+    }
     const { session, settings } = this.getGameSession();
-    const entry = calculateAuthoritativeLeaderboard(session.id, settings).find(
+    const entry = calculateAuthoritativeLeaderboard(session.id, settings, { includeBanned: false }).find(
       (e) => e.team_id === teamId
     );
     if (!entry) return null;

@@ -3,6 +3,7 @@ import { useTeam } from '../layouts/TeamLayout';
 import { CountdownTimer } from '../components/CountdownTimer';
 import { apiFetch } from '../lib/api';
 import { getSocket } from '../lib/socket';
+import { getStoredConclusionDraft, setStoredConclusionDraft, removeStoredConclusionDraft } from '../lib/storage';
 import { ClientClue, TeamPrivateState } from '@nexus/shared';
 import {
   Coins,
@@ -47,13 +48,19 @@ export const Level2GamePage: React.FC = () => {
       setLevel2State(res.level2 || null);
       if (res.level2?.conclusion?.text) {
         setConclusionText(res.level2.conclusion.text);
+        if (team?.id) removeStoredConclusionDraft(team.id, gameState?.session_id);
+      } else if (team?.id) {
+        const draft = getStoredConclusionDraft(team.id, gameState?.session_id);
+        if (draft) {
+          setConclusionText(draft);
+        }
       }
     } catch (err: any) {
       console.error('Failed to load Level 2 state:', err);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [team?.id, gameState?.session_id]);
 
   useEffect(() => {
     loadProgress();
@@ -173,6 +180,9 @@ export const Level2GamePage: React.FC = () => {
         method: 'POST',
         body: JSON.stringify({ conclusion_text: conclusionText.trim() })
       });
+      if (team?.id) {
+        removeStoredConclusionDraft(team.id, gameState?.session_id);
+      }
       setSuccessMessage('Final answer submitted. Your submission is now locked.');
       setTimeout(() => setSuccessMessage(null), 4000);
       await loadProgress();
@@ -369,7 +379,13 @@ export const Level2GamePage: React.FC = () => {
                   rows={4}
                   disabled={disabledByState || isSubmittingConclusion}
                   value={conclusionText}
-                  onChange={(e) => setConclusionText(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setConclusionText(val);
+                    if (team?.id && !isSubmitted) {
+                      setStoredConclusionDraft(team.id, val, gameState?.session_id);
+                    }
+                  }}
                   placeholder="Explain your conclusion. Reference the clues and evidence that support your reasoning."
                   className="w-full p-3 bg-[#FFFFFF] border border-[#E5E5E5] rounded-lg text-[#171717] placeholder-[#A3A3A3] font-body text-xs sm:text-sm focus:outline-none focus:border-[#171717] transition-colors leading-relaxed disabled:opacity-75 disabled:cursor-not-allowed resize-none"
                 />

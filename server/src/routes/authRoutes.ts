@@ -74,6 +74,19 @@ router.get('/me', requireTeamAuth, (req: Request, res: Response): void => {
 });
 
 /**
+ * Team Logout
+ * Route: POST /api/auth/logout
+ */
+router.post('/logout', (_req: Request, res: Response): void => {
+  res.clearCookie('nexus_team_token', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: false
+  });
+  res.json({ message: 'Team logged out successfully' });
+});
+
+/**
  * Admin Login
  * Route: POST /api/auth/admin/login
  */

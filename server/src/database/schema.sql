@@ -1,4 +1,4 @@
--- NEXUS LAN Database Schema
+-- TechBrains LAN Database Schema
 -- Foreign keys must be enabled in SQLite connection: PRAGMA foreign_keys = ON;
 
 PRAGMA foreign_keys = ON;
@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS teams (
     level2_score REAL NOT NULL DEFAULT 0,
     initial_credits INTEGER NOT NULL DEFAULT 200,
     current_credits INTEGER NOT NULL DEFAULT 200,
+    is_banned INTEGER NOT NULL DEFAULT 0 CHECK(is_banned IN (0, 1)),
+    banned_at TEXT,
+    banned_by TEXT REFERENCES admin_users(id),
+    ban_reason TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(game_session_id, team_name COLLATE NOCASE)

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { BRANDING } from '@nexus/shared';
-import { apiFetch, getStoredTeamToken, setStoredTeamToken } from '../lib/api';
+import { apiFetch, getStoredTeamToken, setStoredTeamToken, removeStoredTeamToken } from '../lib/api';
 import { ConnectionBadge } from '../components/ConnectionBadge';
 import { ArrowRight, AlertCircle, Loader2, ShieldCheck, CheckSquare, Award } from 'lucide-react';
 
@@ -21,7 +21,13 @@ export const JoinPage: React.FC = () => {
         .then(() => {
           navigate('/waiting');
         })
-        .catch(() => {
+        .catch((err: any) => {
+          const msg = err?.message || '';
+          // Only clear token if server explicitly confirms invalid/unauthorized credentials (HTTP 401/403)
+          const isAuthFailure = /HTTP (401|403)|unauthorized|invalid token|invalid session/i.test(msg);
+          if (isAuthFailure) {
+            removeStoredTeamToken();
+          }
           setIsCheckingSession(false);
         });
     } else {

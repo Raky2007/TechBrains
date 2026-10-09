@@ -6,9 +6,11 @@ let socket: Socket | null = null;
 export function getSocket(): Socket {
   if (!socket) {
     socket = io(window.location.origin, {
-      auth: {
-        teamToken: getStoredTeamToken(),
-        adminToken: getStoredAdminToken()
+      auth: (cb) => {
+        cb({
+          teamToken: getStoredTeamToken(),
+          adminToken: getStoredAdminToken()
+        });
       },
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 20,
@@ -29,12 +31,16 @@ export function getSocket(): Socket {
 
 export function refreshSocketAuth(): void {
   if (socket) {
-    socket.auth = {
-      teamToken: getStoredTeamToken(),
-      adminToken: getStoredAdminToken()
+    socket.auth = (cb: (data: any) => void) => {
+      cb({
+        teamToken: getStoredTeamToken(),
+        adminToken: getStoredAdminToken()
+      });
     };
     if (socket.connected) {
       socket.disconnect().connect();
+    } else {
+      socket.connect();
     }
   }
 }

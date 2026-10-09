@@ -72,6 +72,10 @@ export interface Team {
   level2_score: number;
   initial_credits: number;
   current_credits: number;
+  is_banned?: number;
+  banned_at?: string | null;
+  banned_by?: string | null;
+  ban_reason?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -325,6 +329,7 @@ export interface LeaderboardEntry {
   conclusion_submitted: boolean;
   evaluation_completed: boolean;
   final_submission_time: string | null;
+  is_banned?: boolean;
 }
 
 export interface PublicGameState {
@@ -442,4 +447,46 @@ export interface ServerAuthoritativeTimerState {
   deadline_at: string;
   remaining_seconds: number;
   is_paused: boolean;
+}
+
+/** Key generation helper for participant client-side conclusion drafts */
+export function getConclusionDraftKey(teamId: string, sessionId?: string): string {
+  const sessionPart = sessionId ? sessionId : 'active';
+  return `techbrains_draft_conclusion_${sessionPart}_${teamId}`;
+}
+
+/** In-memory presence payload broadcast strictly to admin_channel */
+export interface TeamPresencePayload {
+  team_id: string;
+  session_id: string;
+  is_connected: boolean;
+  ip_address: string | null;
+  ip_addresses: string[];
+  connections_count: number;
+  last_connected_at: string | null;
+}
+
+/** Admin team list record enriched with in-memory presence */
+export interface AdminTeamListItem extends Team {
+  answers_count?: number;
+  clues_unlocked_count?: number;
+  conclusion_status?: string | null;
+  is_connected?: boolean;
+  ip_address?: string | null;
+  ip_addresses?: string[];
+  connections_count?: number;
+  last_connected_at?: string | null;
+}
+
+/** Payload sent to an evicted socket when another device/tab connects */
+export interface SessionReplacedPayload {
+  message: string;
+  replaced_at?: string;
+}
+
+/** Payload sent to an evicted socket when a team is banned */
+export interface TeamBannedPayload {
+  message: string;
+  reason?: string | null;
+  banned_at?: string | null;
 }

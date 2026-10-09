@@ -8,7 +8,10 @@ import { logAuditAction } from '../services/auditService.js';
 import {
   broadcastRoundEvent,
   broadcastGameState,
-  broadcastLeaderboard
+  broadcastLeaderboard,
+  getAllTeamsPresence,
+  emitToTeam,
+  banAndDisconnectTeam
 } from '../sockets/socketHandler.js';
 import {
   adminCreateQuestionSchema,
@@ -19,9 +22,9 @@ import {
   adminCreateClueSchema,
   adminUpdateClueSchema,
   adminEvaluationOverrideSchema,
-  adminSettingsSchema
+  adminSettingsSchema,
+  adminBanTeamSchema
 } from '@nexus/shared';
-import { emitToTeam } from '../sockets/socketHandler.js';
 
 const router = Router();
 
@@ -516,12 +519,14 @@ router.delete('/clues/:id', (req: Request, res: Response): void => {
 });
 
 /**
- * Registered Teams List
+ * Registered Teams List (with live in-memory presence and remote LAN IP)
  */
 router.get('/teams', (_req: Request, res: Response): void => {
   const db = getDb();
   const { session } = GameService.getGameSession();
-  const teams = db.prepare(`
+  const presenceMap = getAllTeamsPresence(session.id);
+
+  const rawTeams = db.prepare(`
     SELECT t.*, 
       (SELECT COUNT(*) FROM team_answers WHERE team_id = t.id) as answers_count,
       (SELECT COUNT(*) FROM clue_unlocks WHERE team_id = t.id) as clues_unlocked_count,
@@ -529,7 +534,20 @@ router.get('/teams', (_req: Request, res: Response): void => {
     FROM teams t
     WHERE t.game_session_id = ?
     ORDER BY t.created_at ASC
-  `).all(session.id);
+  `).all(session.id) as any[];
+
+  const teams = rawTeams.map((t) => {
+    const presence = presenceMap.get(t.id);
+    return {
+      ...t,
+      is_connected: presence ? presence.is_connected : false,
+      ip_address: presence && presence.is_connected ? presence.ip_address : null,
+      ip_addresses: presence && presence.is_connected ? presence.ip_addresses : [],
+      connections_count: presence ? presence.connections_count : 0,
+      last_connected_at: presence ? presence.last_connected_at : null
+    };
+  });
+
   res.json({ teams });
 });
 
@@ -542,6 +560,122 @@ router.delete('/teams/:id', (req: Request, res: Response): void => {
     res.json({ success: true, message: 'Team deleted.' });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to delete team.' });
+  }
+});
+
+/**
+ * Ban Team
+ * Route: POST /api/admin/teams/:id/ban
+ */
+router.post('/teams/:id/ban', (req: Request, res: Response): void => {
+  try {
+    const { id } = req.params;
+    const parseResult = adminBanTeamSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid ban request.' });
+      return;
+    }
+
+    const { reason } = parseResult.data;
+    const db = getDb();
+    const { session } = GameService.getGameSession();
+
+    const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(id) as any;
+    if (!team) {
+      res.status(404).json({ error: 'Team not found.' });
+      return;
+    }
+
+    if (team.game_session_id !== session.id) {
+      res.status(404).json({ error: 'Team does not belong to the active game session.' });
+      return;
+    }
+
+    if (team.is_banned) {
+      res.status(400).json({ error: 'Team is already banned.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE teams
+      SET is_banned = 1, banned_at = ?, banned_by = ?, ban_reason = ?, updated_at = ?
+      WHERE id = ?
+    `).run(now, req.adminUser!.id, reason || null, now, id);
+
+    logAuditAction(req.adminUser!.id, 'BAN_TEAM', 'teams', id, {
+      team_name: team.team_name,
+      reason: reason || null,
+      banned_at: now
+    });
+
+    // Forcibly evict and disconnect the active socket
+    banAndDisconnectTeam(session.id, id, reason || null, now);
+
+    res.json({
+      success: true,
+      message: `Team "${team.team_name}" has been banned.`,
+      team: {
+        id: team.id,
+        team_name: team.team_name,
+        is_banned: true,
+        banned_at: now,
+        ban_reason: reason || null
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to ban team.' });
+  }
+});
+
+/**
+ * Unban Team
+ * Route: POST /api/admin/teams/:id/unban
+ */
+router.post('/teams/:id/unban', (req: Request, res: Response): void => {
+  try {
+    const { id } = req.params;
+    const db = getDb();
+    const { session } = GameService.getGameSession();
+
+    const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(id) as any;
+    if (!team) {
+      res.status(404).json({ error: 'Team not found.' });
+      return;
+    }
+
+    if (team.game_session_id !== session.id) {
+      res.status(404).json({ error: 'Team does not belong to the active game session.' });
+      return;
+    }
+
+    if (!team.is_banned) {
+      res.status(400).json({ error: 'Team is not currently banned.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE teams
+      SET is_banned = 0, banned_at = NULL, banned_by = NULL, ban_reason = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(now, id);
+
+    logAuditAction(req.adminUser!.id, 'UNBAN_TEAM', 'teams', id, {
+      team_name: team.team_name
+    });
+
+    res.json({
+      success: true,
+      message: `Team "${team.team_name}" has been unbanned.`,
+      team: {
+        id: team.id,
+        team_name: team.team_name,
+        is_banned: false
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to unban team.' });
   }
 });
 
@@ -655,12 +789,13 @@ router.put('/settings', (req: Request, res: Response): void => {
  */
 router.get('/leaderboard/csv', (_req: Request, res: Response): void => {
   try {
-    const leaderboard = GameService.getLeaderboard();
+    const leaderboard = GameService.getLeaderboard({ includeBanned: true });
 
     // Build CSV content
     const headers = [
       'Rank',
       'Team Name',
+      'Status',
       'Level 1 Score',
       'Level 1 Questions Answered',
       'Level 1 Accuracy (%)',
@@ -674,8 +809,9 @@ router.get('/leaderboard/csv', (_req: Request, res: Response): void => {
     ];
 
     const rows = leaderboard.map((e) => [
-      e.rank,
+      e.is_banned ? 'DISQUALIFIED' : e.rank,
       `"${e.team_name.replace(/"/g, '""')}"`,
+      e.is_banned ? 'BANNED' : 'ACTIVE',
       e.level1_score,
       e.level1_answered,
       e.level1_accuracy_percent,
@@ -691,7 +827,7 @@ router.get('/leaderboard/csv', (_req: Request, res: Response): void => {
     const csvString = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="nexus_leaderboard_${Date.now()}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="techbrains_leaderboard_${Date.now()}.csv"`);
     res.send(csvString);
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to generate CSV export.' });

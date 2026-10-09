@@ -12,7 +12,7 @@ import { setupDatabase } from './database/setup.js';
 import { setupSocketIO, broadcastRoundEvent } from './sockets/socketHandler.js';
 import { registerTimerCallbacks, recoverRoundsOnStartup } from './services/timerService.js';
 import { GameService } from './services/gameService.js';
-import { getLanIpv4Addresses, getPrimaryLanIpv4 } from './utils/network.js';
+import { getLanIpv4Addresses, getPrimaryLanIpv4, isAllowedLanOrigin } from './utils/network.js';
 
 import authRoutes from './routes/authRoutes.js';
 import gameRoutes from './routes/gameRoutes.js';
@@ -29,10 +29,17 @@ async function startServer() {
   const app = express();
   const server = http.createServer(app);
 
-  // 3. Socket.IO authoritative server setup
+  // 3. Socket.IO authoritative server setup with LAN-safe CORS origin policy
   const io = new SocketIOServer(server, {
     cors: {
-      origin: '*',
+      origin: (origin, callback) => {
+        if (isAllowedLanOrigin(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('CORS origin not allowed on LAN server'));
+        }
+      },
+      credentials: true,
       methods: ['GET', 'POST']
     },
     transports: ['websocket', 'polling']
@@ -63,9 +70,15 @@ async function startServer() {
     console.warn(`[AI] AI_PROVIDER="${CONFIG.AI.PROVIDER}" is set but AI_API_KEY is empty; evaluations will fail until a key is provided.`);
   }
 
-  // 6. Middleware stack
+  // 6. Middleware stack with LAN-safe CORS
   app.use(cors({
-    origin: true,
+    origin: (origin, callback) => {
+      if (isAllowedLanOrigin(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('CORS origin not allowed on LAN server'));
+      }
+    },
     credentials: true
   }));
   app.use(cookieParser());
@@ -142,6 +155,6 @@ async function startServer() {
 }
 
 startServer().catch((err) => {
-  console.error('[FATAL] Failed to start NEXUS server:', err);
+  console.error('[FATAL] Failed to start TechBrains server:', err);
   process.exit(1);
 });

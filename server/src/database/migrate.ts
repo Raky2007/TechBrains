@@ -75,6 +75,16 @@ export function runMigrations(): string[] {
     ])
   );
 
+  // Point 14: Admin team ban status and metadata
+  applied.push(
+    ...ensureColumns(db, 'teams', [
+      { name: 'is_banned', definition: 'INTEGER NOT NULL DEFAULT 0' },
+      { name: 'banned_at', definition: 'TEXT' },
+      { name: 'banned_by', definition: 'TEXT' },
+      { name: 'ban_reason', definition: 'TEXT' }
+    ])
+  );
+
   if (applied.length > 0) {
     console.log(`[Migrate] Applied additive column migrations: ${applied.join(', ')}`);
   } else {

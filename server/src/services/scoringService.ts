@@ -48,9 +48,14 @@ export function calculateLevel1Score(
  */
 export function calculateAuthoritativeLeaderboard(
   sessionId: string,
-  settings: GameSettings
+  settings: GameSettings,
+  options: { includeBanned?: boolean } = {}
 ): LeaderboardEntry[] {
   const db = getDb();
+
+  const whereClause = options.includeBanned
+    ? 'WHERE t.game_session_id = ?'
+    : 'WHERE t.game_session_id = ? AND (t.is_banned = 0 OR t.is_banned IS NULL)';
 
   // Query teams with completed stats
   const teams = db.prepare(`
@@ -61,6 +66,7 @@ export function calculateAuthoritativeLeaderboard(
       t.level2_score,
       t.initial_credits,
       t.current_credits,
+      t.is_banned,
       c.status as conclusion_status,
       c.submitted_at as conclusion_submitted_at,
       e.id as evaluation_id,
@@ -70,7 +76,7 @@ export function calculateAuthoritativeLeaderboard(
     FROM teams t
     LEFT JOIN conclusions c ON c.team_id = t.id AND c.status = 'submitted'
     LEFT JOIN evaluations e ON e.conclusion_id = c.id
-    WHERE t.game_session_id = ?
+    ${whereClause}
   `).all(sessionId) as any[];
 
   const entries: LeaderboardEntry[] = teams.map((t) => {
@@ -90,7 +96,8 @@ export function calculateAuthoritativeLeaderboard(
       credits_remaining: t.current_credits,
       conclusion_submitted: t.conclusion_status === 'submitted',
       evaluation_completed: !!t.evaluation_id,
-      final_submission_time: t.conclusion_submitted_at || null
+      final_submission_time: t.conclusion_submitted_at || null,
+      is_banned: !!t.is_banned
     };
   });
 

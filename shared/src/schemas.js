@@ -112,3 +112,6 @@ export const adminSettingsSchema = z.object({
     tieBreakerRule: z.enum(['default', 'l2_first', 'l1_accuracy', 'time_first']),
     randomizeQuestionOrder: z.boolean()
 });
+export const adminBanTeamSchema = z.object({
+    reason: z.string().trim().max(300, 'Reason must be at most 300 characters').optional()
+});

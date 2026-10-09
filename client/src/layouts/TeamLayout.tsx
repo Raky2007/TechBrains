@@ -3,8 +3,8 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Navbar } from '../components/Navbar';
 import { apiFetch, getStoredTeamToken, removeStoredTeamToken } from '../lib/api';
 import { getSocket, refreshSocketAuth } from '../lib/socket';
-import { PublicGameState, Team, TeamPrivateState, TeamStage } from '@nexus/shared';
-import { Loader2 } from 'lucide-react';
+import { PublicGameState, Team, TeamPrivateState, TeamStage, SessionReplacedPayload, TeamBannedPayload } from '@nexus/shared';
+import { Loader2, ShieldAlert } from 'lucide-react';
 
 interface TeamContextType {
   team: Team | null;
@@ -49,6 +49,10 @@ export const TeamLayout: React.FC = () => {
   const [gameState, setGameState] = useState<PublicGameState | null>(null);
   const [stage, setStage] = useState<TeamStage | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isSessionReplaced, setIsSessionReplaced] = useState<boolean>(false);
+  const [replacedMessage, setReplacedMessage] = useState<string>('');
+  const [isBanned, setIsBanned] = useState<boolean>(false);
+  const [banReason, setBanReason] = useState<string>('');
 
   // Keep the latest path in a ref so socket handlers (registered once) always
   // see the current route without re-subscribing.
@@ -61,7 +65,14 @@ export const TeamLayout: React.FC = () => {
       const res = await apiFetch<{ team: Team }>('/api/auth/me');
       setTeam(res.team);
       teamIdRef.current = res.team.id;
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.is_banned || err?.status === 403) {
+        setIsBanned(true);
+        setBanReason(err.ban_reason || 'Your team has been disqualified and banned by an administrator.');
+        const socket = getSocket();
+        socket.disconnect();
+        return;
+      }
       removeStoredTeamToken();
       navigate('/');
     }
@@ -98,7 +109,14 @@ export const TeamLayout: React.FC = () => {
       const target = pathForStage(res.stage);
       if (pathRef.current !== target) navigate(target);
       return res.stage;
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.is_banned || err?.status === 403) {
+        setIsBanned(true);
+        setBanReason(err.ban_reason || 'Your team has been disqualified and banned by an administrator.');
+        const socket = getSocket();
+        socket.disconnect();
+        return null;
+      }
       console.error('Failed to sync team stage:', err);
       return null;
     }
@@ -147,6 +165,28 @@ export const TeamLayout: React.FC = () => {
     socket.on('results:published', () => onGlobalChange());
     socket.on('team:private_updated', onPrivateUpdate);
 
+    const onSessionReplaced = (payload?: SessionReplacedPayload) => {
+      console.warn('[Socket] Team session replaced by another connection');
+      setIsSessionReplaced(true);
+      if (payload?.message) {
+        setReplacedMessage(payload.message);
+      }
+      socket.disconnect();
+    };
+    socket.on('team:session_replaced', onSessionReplaced);
+
+    const onTeamBanned = (payload?: TeamBannedPayload) => {
+      console.warn('[Socket] Team has been banned by an administrator');
+      setIsBanned(true);
+      if (payload?.reason) {
+        setBanReason(payload.reason);
+      } else {
+        setBanReason('Your team has been disqualified and banned by an administrator.');
+      }
+      socket.disconnect();
+    };
+    socket.on('team:banned', onTeamBanned);
+
     return () => {
       socket.off('game:state_changed', onGlobalChange);
       socket.off('round:started');
@@ -155,10 +195,41 @@ export const TeamLayout: React.FC = () => {
       socket.off('round:ended');
       socket.off('results:published', onGlobalChange);
       socket.off('team:private_updated', onPrivateUpdate);
+      socket.off('team:session_replaced', onSessionReplaced);
+      socket.off('team:banned', onTeamBanned);
     };
     // Registered once for the lifetime of the layout; handlers use refs for path.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Guard against direct URL changes: if user navigates to a route not permitted
+  // for their server-authoritative stage, immediately snap back to allowed path.
+  useEffect(() => {
+    if (isLoading || isSessionReplaced || isBanned || !stage) return;
+    const currentPath = location.pathname;
+    const isPathAllowed = (path: string, currentStage: TeamStage): boolean => {
+      switch (currentStage) {
+        case 'waiting':
+          return path === '/waiting';
+        case 'round1':
+          return path === '/level1';
+        case 'round1_done':
+          return path === '/level1' || path === '/waiting';
+        case 'round2':
+        case 'not_qualified':
+          return path === '/level2' || path === '/level1';
+        case 'result':
+          return path === '/result' || path === '/level1' || path === '/level2';
+        default:
+          return path === '/waiting';
+      }
+    };
+
+    if (!isPathAllowed(currentPath, stage)) {
+      const target = pathForStage(stage);
+      navigate(target, { replace: true });
+    }
+  }, [location.pathname, stage, isLoading, navigate]);
 
   if (isLoading) {
     return (
@@ -169,10 +240,71 @@ export const TeamLayout: React.FC = () => {
     );
   }
 
+  if (isBanned) {
+    return (
+      <div className="min-h-screen bg-bgMain flex flex-col">
+        <Navbar team={team} stage={stage} onLogout={() => setTeam(null)} />
+        <main className="flex-1 max-w-2xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex items-center justify-center">
+          <div className="bg-bgCard border border-[#B42318]/40 rounded-xl p-8 shadow-xl text-center space-y-6">
+            <div className="inline-flex p-4 rounded-full bg-[#B42318]/10 text-[#B42318] mb-2">
+              <ShieldAlert className="w-12 h-12" />
+            </div>
+            <h2 className="text-2xl font-bold font-mono text-[#B42318] tracking-wide">
+              Team Disqualified
+            </h2>
+            <div className="bg-[#B42318]/5 border border-[#B42318]/20 rounded-lg p-4 text-left">
+              <p className="text-xs font-mono text-[#737373] uppercase tracking-wider mb-1">
+                Notice:
+              </p>
+              <p className="text-sm font-body text-[#171717] font-medium leading-relaxed">
+                {banReason || 'Your team has been disqualified and banned from this game session by an administrator.'}
+              </p>
+            </div>
+            <p className="text-xs text-[#737373] font-body leading-relaxed">
+              All further access to game rounds and submissions has been revoked for this team. If you believe this is an error, please speak directly to the event invigilators.
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (isSessionReplaced) {
+    return (
+      <div className="min-h-screen bg-bgMain flex flex-col">
+        <Navbar team={team} stage={stage} onLogout={() => setTeam(null)} />
+        <main className="flex-1 max-w-2xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex items-center justify-center">
+          <div className="bg-bgCard border border-primaryYellow/40 rounded-xl p-8 shadow-xl text-center space-y-6">
+            <div className="inline-flex p-4 rounded-full bg-primaryYellow/10 text-primaryYellow mb-2">
+              <ShieldAlert className="w-12 h-12" />
+            </div>
+            <h2 className="text-2xl font-bold font-mono text-textPrimary tracking-wide">
+              Session Active in Another Window
+            </h2>
+            <p className="text-textSecondary text-sm sm:text-base leading-relaxed">
+              {replacedMessage || 'Your team session was opened in another tab or device. Only one active connection is permitted per team to maintain game integrity.'}
+            </p>
+            <div className="pt-2 flex flex-col sm:flex-row gap-4 justify-center">
+              <button
+                onClick={() => window.location.reload()}
+                className="px-6 py-3 bg-primaryYellow hover:bg-yellow-400 text-bgMain font-bold font-mono rounded-lg transition-all shadow-md active:scale-95"
+              >
+                Resume in This Window
+              </button>
+            </div>
+            <p className="text-xs text-textMuted font-mono">
+              Resuming here will automatically transfer the active session to this window and disconnect the other tab.
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <TeamContext.Provider value={{ team, gameState, stage, refreshTeam: fetchTeamProfile, refreshGameState: fetchGameState }}>
       <div className="min-h-screen bg-bgMain flex flex-col">
-        <Navbar team={team} onLogout={() => setTeam(null)} />
+        <Navbar team={team} stage={stage} onLogout={() => setTeam(null)} />
         <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
           <Outlet />
         </main>

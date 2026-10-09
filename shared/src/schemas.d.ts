@@ -310,3 +310,10 @@ export declare const adminSettingsSchema: z.ZodObject<{
     level1DurationMinutes?: number | undefined;
     round1CutoffScore?: number | undefined;
 }>;
+export declare const adminBanTeamSchema: z.ZodObject<{
+    reason: z.ZodOptional<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    reason?: string | undefined;
+}, {
+    reason?: string | undefined;
+}>;

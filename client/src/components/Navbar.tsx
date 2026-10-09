@@ -1,9 +1,11 @@
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { BRANDING } from '@nexus/shared';
+import { BRANDING, TeamStage } from '@nexus/shared';
 import { ConnectionBadge } from './ConnectionBadge';
 import { Coins, LogOut } from 'lucide-react';
-import { removeStoredTeamToken } from '../lib/api';
+import { removeStoredTeamToken, apiFetch } from '../lib/api';
+import { clearAllTeamDrafts, removeStoredConclusionDraft } from '../lib/storage';
+import { refreshSocketAuth } from '../lib/socket';
 
 interface NavbarProps {
   team?: {
@@ -13,24 +15,57 @@ interface NavbarProps {
     level1_score: number;
     level2_score: number;
   } | null;
+  stage?: TeamStage | null;
   onLogout?: () => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ team, onLogout }) => {
+export const Navbar: React.FC<NavbarProps> = ({ team, stage, onLogout }) => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const handleLeaveTeam = () => {
+  const handleLeaveTeam = async () => {
+    try {
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      // Allow local logout even if host server is temporarily unreachable
+    }
+    if (team?.id) {
+      removeStoredConclusionDraft(team.id);
+      clearAllTeamDrafts(team.id);
+    }
     removeStoredTeamToken();
+    refreshSocketAuth();
     if (onLogout) onLogout();
     navigate('/');
   };
 
-  const navLinks = [
-    { label: 'Waiting Room', path: '/waiting' },
-    { label: 'Round 1', path: '/level1' },
-    { label: 'Round 2', path: '/level2' },
-  ];
+  const getNavLinks = () => {
+    if (!stage || stage === 'waiting') {
+      return [{ label: 'Waiting Room', path: '/waiting' }];
+    }
+    if (stage === 'round1' || stage === 'round1_done') {
+      return [
+        { label: 'Waiting Room', path: '/waiting' },
+        { label: 'Round 1', path: '/level1' }
+      ];
+    }
+    if (stage === 'round2' || stage === 'not_qualified') {
+      return [
+        { label: 'Round 1', path: '/level1' },
+        { label: 'Round 2', path: '/level2' }
+      ];
+    }
+    if (stage === 'result') {
+      return [
+        { label: 'Round 1', path: '/level1' },
+        { label: 'Round 2', path: '/level2' },
+        { label: 'Results', path: '/result' }
+      ];
+    }
+    return [{ label: 'Waiting Room', path: '/waiting' }];
+  };
+
+  const navLinks = getNavLinks();
 
   return (
     <header className="sticky top-0 z-40 bg-[#FFFFFF] border-b border-[#E5E5E5] px-4 lg:px-8 py-3.5 shadow-xs">
