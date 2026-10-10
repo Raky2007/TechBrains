@@ -97,9 +97,59 @@ export function runMigrations(): string[] {
   // Level pools: add required_level to clues table for level-specific spending
   applied.push(
     ...ensureColumns(db, 'clues', [
-      { name: 'required_level', definition: 'INTEGER NOT NULL DEFAULT 1' }
+      { name: 'required_level', definition: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'question_number', definition: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'tier', definition: 'TEXT NOT NULL DEFAULT "simple"' }
     ])
   );
+
+  // Level 2 Question 1 & Question 2 columns on conclusions
+  applied.push(
+    ...ensureColumns(db, 'conclusions', [
+      { name: 'q1_pin', definition: 'TEXT' },
+      { name: 'q1_is_correct', definition: 'INTEGER DEFAULT 0' },
+      { name: 'q1_score', definition: 'REAL DEFAULT 0' },
+      { name: 'q2_selected_suspect', definition: 'TEXT' },
+      { name: 'q2_explanation', definition: 'TEXT' }
+    ])
+  );
+
+  // Level 2 Question 1 & Question 2 breakdown on case_evaluations
+  applied.push(
+    ...ensureColumns(db, 'case_evaluations', [
+      { name: 'q1_score', definition: 'REAL DEFAULT 0' },
+      { name: 'q2_score', definition: 'REAL DEFAULT 0' },
+      { name: 'q2_selected_suspect_correct', definition: 'INTEGER DEFAULT 0' },
+      { name: 'q2_closest_answer', definition: 'TEXT' },
+      { name: 'q2_accuracy_summary', definition: 'TEXT' },
+      { name: 'q2_matched_evidence', definition: 'TEXT' },
+      { name: 'q2_missing_evidence', definition: 'TEXT' },
+      { name: 'q2_feedback', definition: 'TEXT' }
+    ])
+  );
+
+  // Ensure level2_question_submissions table exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS level2_question_submissions (
+      id TEXT PRIMARY KEY,
+      round_id TEXT NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
+      team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      question_number INTEGER NOT NULL CHECK(question_number IN (1, 2)),
+      pin_submitted TEXT,
+      pin_normalized TEXT,
+      is_correct INTEGER,
+      selected_suspect TEXT,
+      explanation TEXT,
+      score REAL NOT NULL DEFAULT 0,
+      max_score REAL NOT NULL DEFAULT 5,
+      evaluation_status TEXT NOT NULL DEFAULT 'completed' CHECK(evaluation_status IN ('pending', 'completed', 'failed')),
+      evaluation_data_json TEXT,
+      submitted_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(round_id, team_id, question_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_l2_q_sub_round_team ON level2_question_submissions(round_id, team_id);
+  `);
 
   if (applied.length > 0) {
     console.log(`[Migrate] Applied additive column migrations: ${applied.join(', ')}`);

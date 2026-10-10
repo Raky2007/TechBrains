@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiFetch } from '../../lib/api';
 import { Level1Question, ContentType, Level1AnswerChoice } from '@nexus/shared';
-import { Plus, Trash2, Edit2, AlertCircle, Loader2, X, Clock } from 'lucide-react';
+import { Plus, Trash2, Edit2, AlertCircle, Loader2, X, Clock, Image as ImageIcon } from 'lucide-react';
 
 const ANSWER_LABELS: Record<Level1AnswerChoice, string> = {
   AI: 'AI Made',
@@ -25,7 +25,6 @@ export const AdminQuestionsPage: React.FC = () => {
   // Form state (simplified)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState<string>('');
-  const [contentType, setContentType] = useState<ContentType>('text');
   const [mediaPath, setMediaPath] = useState<string>('');
   const [correctAnswer, setCorrectAnswer] = useState<Level1AnswerChoice>('AI');
   const [timeLimit, setTimeLimit] = useState<number>(30);
@@ -51,7 +50,6 @@ export const AdminQuestionsPage: React.FC = () => {
   const resetForm = () => {
     setEditingId(null);
     setTitle('');
-    setContentType('text');
     setMediaPath('');
     setCorrectAnswer('AI');
     setTimeLimit(30);
@@ -66,7 +64,6 @@ export const AdminQuestionsPage: React.FC = () => {
   const openEditModal = (q: Level1Question) => {
     setEditingId(q.id);
     setTitle(q.title);
-    setContentType(q.content_type);
     setMediaPath(q.media_path || '');
     setCorrectAnswer(q.correct_answer);
     setTimeLimit(q.time_limit_seconds ?? 30);
@@ -96,10 +93,10 @@ export const AdminQuestionsPage: React.FC = () => {
     e.preventDefault();
     setFormError(null);
 
-    // Only the fields a Round 1 question needs. is_active defaults to active.
+    // Round 1 questions are strictly image files
     const payload = {
       title: title.trim(),
-      content_type: contentType,
+      content_type: 'image',
       media_path: mediaPath || null,
       correct_answer: correctAnswer,
       time_limit_seconds: timeLimit,
@@ -121,7 +118,7 @@ export const AdminQuestionsPage: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Delete or archive this question?')) return;
+    if (!window.confirm('Are you sure you want to delete this question?')) return;
     try {
       await apiFetch(`/api/admin/questions/${id}`, { method: 'DELETE' });
       await fetchQuestions();
@@ -134,9 +131,9 @@ export const AdminQuestionsPage: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-heading font-bold text-[#171717]">Round 1 · Questions</h1>
+          <h1 className="text-2xl font-heading font-bold text-[#171717]">Level 1 · Questions</h1>
           <p className="text-xs text-[#737373] font-mono mt-0.5">
-            Each question holds its content/media, the correct answer, and its own timer.
+            Each question holds its image, the correct answer, and its own timer.
           </p>
         </div>
         <button
@@ -155,7 +152,7 @@ export const AdminQuestionsPage: React.FC = () => {
             <thead className="bg-[#F5F5F2] text-[#737373] font-mono text-[11px] uppercase tracking-wider border-b border-[#E5E5E5]">
               <tr>
                 <th className="py-3 px-4">Question</th>
-                <th className="py-3 px-4">Type</th>
+                <th className="py-3 px-4">Image</th>
                 <th className="py-3 px-4">Correct Answer</th>
                 <th className="py-3 px-4 text-center">Time</th>
                 <th className="py-3 px-4 text-right">Actions</th>
@@ -165,7 +162,17 @@ export const AdminQuestionsPage: React.FC = () => {
               {questions.map((q, idx) => (
                 <tr key={q.id} className={`transition-colors hover:bg-[#FFF0D6]/40 ${idx % 2 === 1 ? 'bg-[#F5F5F2]/40' : 'bg-[#FFFFFF]'}`}>
                   <td className="py-3 px-4 font-heading font-medium text-[#171717] max-w-md truncate">{q.title}</td>
-                  <td className="py-3 px-4 font-mono uppercase text-[11px] text-[#737373]">{q.content_type}</td>
+                  <td className="py-3 px-4">
+                    {q.media_path ? (
+                      <img
+                        src={q.media_path}
+                        alt={q.title}
+                        className="w-10 h-10 object-cover rounded-lg border border-[#E5E5E5] bg-[#F5F5F2]"
+                      />
+                    ) : (
+                      <span className="text-[#737373] text-[11px] font-mono italic">No image</span>
+                    )}
+                  </td>
                   <td className="py-3 px-4 font-mono font-bold">
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] border ${
@@ -190,7 +197,7 @@ export const AdminQuestionsPage: React.FC = () => {
                     </button>
                     <button
                       onClick={() => handleDelete(q.id)}
-                      title="Delete / Archive Question"
+                      title="Delete Question"
                       className="p-1.5 rounded-lg text-[#737373] hover:text-[#B42318] hover:bg-[#B42318]/10 transition-colors cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -232,26 +239,55 @@ export const AdminQuestionsPage: React.FC = () => {
                   required
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  placeholder="The content to judge (or a short label for the media below)."
+                  placeholder="The content to judge (or a short label for the image below)."
                   className="w-full p-3 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs focus:outline-none focus:border-[#171717] leading-relaxed"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
-                    Content Type
+              {/* Image upload is always present since Round 1 is strictly image-based */}
+              <div className="space-y-2 p-4 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5]">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-heading font-bold text-[#171717] uppercase tracking-wider flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5" /> Image File
                   </label>
-                  <select
-                    value={contentType}
-                    onChange={(e) => setContentType(e.target.value as ContentType)}
-                    className="w-full px-3 py-2 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] text-xs focus:outline-none focus:border-[#171717]"
-                  >
-                    <option value="text">Text Only</option>
-                    <option value="image">Image File</option>
-                    <option value="video">Video File</option>
-                  </select>
+                  {mediaPath && (
+                    <button
+                      type="button"
+                      onClick={() => setMediaPath('')}
+                      className="text-[11px] font-mono text-[#B42318] hover:underline cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  )}
                 </div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleFileUpload(file);
+                  }}
+                  className="block w-full text-xs text-[#737373] file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-[#FFC928] file:text-[#171717] hover:file:bg-[#F5BE18] cursor-pointer"
+                />
+                {isUploading && (
+                  <div className="flex items-center gap-2 text-xs font-mono text-[#18794E]">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Uploading…</span>
+                  </div>
+                )}
+                {mediaPath && (
+                  <div className="flex items-center gap-3 pt-2">
+                    <img
+                      src={mediaPath}
+                      alt="Uploaded preview"
+                      className="w-16 h-16 object-cover rounded-lg border border-[#E5E5E5] bg-white shadow-xs"
+                    />
+                    <div className="text-xs font-mono text-[#18794E] truncate font-semibold">✓ {mediaPath}</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1">
                     Correct Answer
@@ -266,49 +302,26 @@ export const AdminQuestionsPage: React.FC = () => {
                     <option value="CANT_DEFINE">Can't Determine (0)</option>
                   </select>
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1 flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5" /> Question Time (seconds)
-                </label>
-                <input
-                  type="number"
-                  min={3}
-                  max={600}
-                  required
-                  value={timeLimit}
-                  onChange={(e) => setTimeLimit(parseInt(e.target.value, 10) || 0)}
-                  className="w-full max-w-[160px] px-3.5 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
-                />
-                <p className="text-[11px] text-[#737373] mt-1">
-                  The participant has this long to answer. Total Round 1 length is the sum of all question timers.
-                </p>
-              </div>
-
-              {contentType !== 'text' && (
-                <div className="space-y-2 p-4 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5]">
-                  <label className="block text-xs font-heading font-bold text-[#171717] uppercase tracking-wider">
-                    {contentType.toUpperCase()} Media File
+                <div>
+                  <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" /> Question Time (sec)
                   </label>
                   <input
-                    type="file"
-                    accept={contentType === 'image' ? 'image/*' : 'video/*'}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleFileUpload(file);
-                    }}
-                    className="block w-full text-xs text-[#737373] file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-[#FFC928] file:text-[#171717] hover:file:bg-[#F5BE18] cursor-pointer"
+                    type="number"
+                    min={3}
+                    max={600}
+                    required
+                    value={timeLimit}
+                    onChange={(e) => setTimeLimit(parseInt(e.target.value, 10) || 0)}
+                    className="w-full px-3 py-2 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
                   />
-                  {isUploading && (
-                    <div className="flex items-center gap-2 text-xs font-mono text-[#18794E]">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Uploading…</span>
-                    </div>
-                  )}
-                  {mediaPath && <div className="text-xs font-mono text-[#18794E] truncate font-semibold">✓ {mediaPath}</div>}
                 </div>
-              )}
+              </div>
+
+              <p className="text-[11px] text-[#737373]">
+                The participant has this long to answer. Total Level 1 length is the sum of all question timers.
+              </p>
 
               {formError && (
                 <div className="p-3 rounded-lg bg-[#B42318]/5 border border-[#B42318]/20 text-[#B42318] text-xs flex items-center gap-2">

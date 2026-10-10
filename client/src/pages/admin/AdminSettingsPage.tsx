@@ -76,7 +76,7 @@ export const AdminSettingsPage: React.FC = () => {
           System & Backup
         </h1>
         <p className="text-xs text-[#737373] font-mono mt-0.5">
-          Event-wide settings and data backups. Round timers and configuration live under Round 1 and Round 2.
+          Event-wide settings and data backups. Level timers and configuration live under Level 1 and Level 2.
         </p>
       </div>
 
@@ -116,9 +116,9 @@ export const AdminSettingsPage: React.FC = () => {
               }
               className="w-full px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
             >
-              <option value="default">Default: Round 2 Score, then R1 Accuracy, then Time</option>
-              <option value="l2_first">Round 2 Score Priority</option>
-              <option value="l1_accuracy">Round 1 Accuracy Priority</option>
+              <option value="default">Default: Level 2 Score, then L1 Accuracy, then Time</option>
+              <option value="l2_first">Level 2 Score Priority</option>
+              <option value="l1_accuracy">Level 1 Accuracy Priority</option>
               <option value="time_first">Submission Timestamp Priority</option>
             </select>
           </div>

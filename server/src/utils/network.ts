@@ -6,14 +6,15 @@ export interface NetworkInterfaceInfo {
   address: string;
   family: string;
   internal: boolean;
+  netmask?: string;
 }
 
 /**
  * Returns all active non-internal IPv4 addresses on the host machine.
  */
-export function getLanIpv4Addresses(): { interfaceName: string; address: string }[] {
+export function getLanIpv4Addresses(): { interfaceName: string; address: string; netmask?: string }[] {
   const interfaces = os.networkInterfaces();
-  const results: { interfaceName: string; address: string }[] = [];
+  const results: { interfaceName: string; address: string; netmask?: string }[] = [];
 
   for (const [name, netList] of Object.entries(interfaces)) {
     if (!netList) continue;
@@ -22,7 +23,8 @@ export function getLanIpv4Addresses(): { interfaceName: string; address: string 
       if (netInfo.family === 'IPv4' && !netInfo.internal) {
         results.push({
           interfaceName: name,
-          address: netInfo.address
+          address: netInfo.address,
+          netmask: netInfo.netmask
         });
       }
     }
@@ -35,7 +37,7 @@ export function getLanIpv4Addresses(): { interfaceName: string; address: string 
       if (lower.includes('ethernet') || lower.includes('eth')) return 1;
       if (lower.includes('wi-fi') || lower.includes('wlan') || lower.includes('wireless')) return 2;
       if (lower.includes('local area connection')) return 3;
-      if (lower.includes('vEthernet') || lower.includes('virtual') || lower.includes('wsl')) return 10;
+      if (lower.includes('vethernet') || lower.includes('virtual') || lower.includes('wsl')) return 10;
       return 5;
     };
     return priority(a.interfaceName) - priority(b.interfaceName);
@@ -45,7 +47,7 @@ export function getLanIpv4Addresses(): { interfaceName: string; address: string 
 }
 
 /**
- * Returns the best candidate primary LAN IPv4 address or 'localhost' as fallback
+ * Returns the best candidate primary LAN IPv4 address or '127.0.0.1' as fallback
  */
 export function getPrimaryLanIpv4(): string {
   const list = getLanIpv4Addresses();
@@ -56,38 +58,171 @@ export function getPrimaryLanIpv4(): string {
 }
 
 /**
+ * Checks whether an IPv4 address falls within a given network subnet.
+ */
+function isIpInSubnet(ip: string, networkIp: string, netmask?: string): boolean {
+  if (!netmask || netmask === '0.0.0.0') return false;
+  const maskParts = netmask.split('.').map(Number);
+  if (maskParts.length !== 4 || maskParts[0] !== 255) return false; // At least a /8 mask required
+
+  const ipParts = ip.split('.').map(Number);
+  const netParts = networkIp.split('.').map(Number);
+  if (ipParts.length !== 4 || netParts.length !== 4) return false;
+
+  for (let i = 0; i < 4; i++) {
+    if (isNaN(ipParts[i]) || isNaN(netParts[i]) || isNaN(maskParts[i])) return false;
+    if ((ipParts[i] & maskParts[i]) !== (netParts[i] & maskParts[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Retrieves all IP addresses and hostnames that identify this host machine.
+ */
+export function getHostIdentifiers(): Set<string> {
+  const identifiers = new Set<string>();
+  identifiers.add('localhost');
+  identifiers.add('127.0.0.1');
+  identifiers.add('::1');
+
+  try {
+    const host = os.hostname().toLowerCase();
+    identifiers.add(host);
+    identifiers.add(`${host}.local`);
+  } catch {}
+
+  const ifaces = os.networkInterfaces();
+  for (const list of Object.values(ifaces)) {
+    if (!list) continue;
+    for (const info of list) {
+      if (info.address) {
+        identifiers.add(info.address.toLowerCase());
+      }
+    }
+  }
+
+  return identifiers;
+}
+
+/**
+ * Parses user-defined allowed origins from environment variables.
+ */
+function getConfiguredAllowedOrigins(): string[] {
+  const envVars = [
+    process.env.CLIENT_URL,
+    process.env.CORS_ORIGIN,
+    process.env.ALLOWED_ORIGINS,
+    process.env.FRONTEND_URL
+  ];
+
+  const allowed: string[] = [];
+  for (const envVal of envVars) {
+    if (!envVal) continue;
+    const items = envVal.split(',').map((s) => s.trim()).filter(Boolean);
+    allowed.push(...items);
+  }
+  return allowed;
+}
+
+/**
  * Validates whether an incoming HTTP/WebSocket origin belongs to a permitted local or LAN network address.
  */
 export function isAllowedLanOrigin(origin?: string): boolean {
   if (!origin) return true; // Same-origin or non-browser client requests
+
   try {
-    const url = new URL(origin);
+    const trimmedOrigin = origin.trim();
 
-    // Only allow HTTP/HTTPS protocols
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      return false;
-    }
-
-    const hostname = url.hostname;
-
-    // Loopback & localhost
-    if (hostname === 'localhost' || hostname === '::1') {
+    // Check wildcard or configured environment variables first
+    const configuredOrigins = getConfiguredAllowedOrigins();
+    if (configuredOrigins.includes('*') || process.env.CORS_ALLOW_ALL === 'true') {
       return true;
     }
 
-    // Strict IPv4 parsing & validation
+    if (configuredOrigins.some((allowed) => allowed === trimmedOrigin || allowed.replace(/\/+$/, '') === trimmedOrigin.replace(/\/+$/, ''))) {
+      return true;
+    }
+
+    const url = new URL(trimmedOrigin);
+
+    // Only allow HTTP/HTTPS/WS/WSS protocols
+    if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+      return false;
+    }
+
+    // Strip brackets around IPv6 literals (e.g. [::1] -> ::1)
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+
+    // 1. Loopback and Localhost
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      return true;
+    }
+
+    // 2. Direct match with any host machine interface IP or hostname
+    const hostIdentifiers = getHostIdentifiers();
+    if (hostIdentifiers.has(hostname)) {
+      return true;
+    }
+
+    // 3. Local network domain suffixes (mDNS / router local domains, never public TLDs)
+    if (
+      hostname.endsWith('.local') ||
+      hostname.endsWith('.lan') ||
+      hostname.endsWith('.internal') ||
+      hostname.endsWith('.home')
+    ) {
+      return true;
+    }
+
+    // 4. Strict IPv4 parsing & validation
     if (net.isIPv4(hostname)) {
       const octets = hostname.split('.').map(Number);
+      if (octets.some((o) => isNaN(o) || o < 0 || o > 255)) {
+        return false;
+      }
+
       // Loopback (127.0.0.0/8)
       if (octets[0] === 127) return true;
-      // 10.0.0.0/8
+
+      // RFC 1918: 10.0.0.0/8
       if (octets[0] === 10) return true;
-      // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+
+      // RFC 1918: 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
       if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
-      // 192.168.0.0/16
+
+      // RFC 1918: 192.168.0.0/16
       if (octets[0] === 192 && octets[1] === 168) return true;
-      // Link-local (169.254.0.0/16)
+
+      // Link-local: 169.254.0.0/16
       if (octets[0] === 169 && octets[1] === 254) return true;
+
+      // Carrier-Grade NAT (RFC 6598): 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
+      if (octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) return true;
+
+      // Check if IP belongs to the local subnet of any active host network interface
+      const ifaces = os.networkInterfaces();
+      for (const netList of Object.values(ifaces)) {
+        if (!netList) continue;
+        for (const iface of netList) {
+          if (iface.family === 'IPv4' && !iface.internal && iface.address && iface.netmask) {
+            if (isIpInSubnet(hostname, iface.address, iface.netmask)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    // 5. IPv6 validation
+    if (net.isIPv6(hostname)) {
+      // IPv6 Loopback
+      if (hostname === '::1') return true;
+      // IPv6 Unique Local Address (ULA) fc00::/7 (fc00:: - fdff::)
+      if (hostname.startsWith('fc') || hostname.startsWith('fd')) return true;
+      // IPv6 Link-Local Address fe80::/10
+      if (hostname.startsWith('fe80:')) return true;
     }
 
     return false;

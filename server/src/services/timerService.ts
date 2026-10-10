@@ -24,14 +24,19 @@ export function registerTimerCallbacks(
 }
 
 /**
- * Check active rounds and atomically trigger expiration when deadline is passed
+ * Check active rounds and atomically trigger expiration when deadline is passed.
+ * Scoped strictly to the authoritative active game session.
  */
 export async function checkAuthoritativeDeadlines(): Promise<void> {
   try {
     const db = getDb();
+    const activeSession = db.prepare('SELECT id FROM game_sessions ORDER BY created_at DESC LIMIT 1').get() as { id: string } | undefined;
+    if (!activeSession) return;
+
     const activeRounds = db.prepare(`
-      SELECT * FROM rounds WHERE status = 'active'
-    `).all() as Round[];
+      SELECT * FROM rounds 
+      WHERE game_session_id = ? AND status = 'active'
+    `).all(activeSession.id) as Round[];
 
     const now = Date.now();
 
@@ -89,17 +94,28 @@ export function getAuthoritativeTimerState(round: Round | null): ServerAuthorita
 
 /**
  * Recovers timers on server reboot.
+ * Cleans up stale active rounds from non-active sessions and only processes active session rounds.
  */
 export function recoverRoundsOnStartup(): void {
   const db = getDb();
-  const activeRounds = db.prepare(`SELECT * FROM rounds WHERE status = 'active'`).all() as Round[];
+  const session = db.prepare('SELECT id FROM game_sessions ORDER BY created_at DESC LIMIT 1').get() as { id: string } | undefined;
   const now = Date.now();
+  const endedAt = new Date().toISOString();
+
+  // 1. Mark any active/paused rounds in archived sessions as ended without touching active session rounds
+  if (session) {
+    db.prepare(`UPDATE rounds SET status = 'ended', ended_at = ? WHERE status IN ('active', 'paused') AND game_session_id != ?`).run(endedAt, session.id);
+  }
+
+  // 2. Only inspect active rounds belonging to the authoritative active game session
+  const activeRounds = session
+    ? (db.prepare(`SELECT * FROM rounds WHERE game_session_id = ? AND status = 'active'`).all(session.id) as Round[])
+    : [];
 
   for (const round of activeRounds) {
     const deadline = new Date(round.deadline_at).getTime();
     if (deadline <= now) {
       console.log(`[TimerService] Startup recovery: Round ${round.id} expired during server downtime. Marking ended.`);
-      const endedAt = new Date().toISOString();
       db.prepare(`UPDATE rounds SET status = 'ended', ended_at = ? WHERE id = ?`).run(endedAt, round.id);
       db.prepare(`UPDATE game_sessions SET status = ?, updated_at = ? WHERE id = ?`).run(
         round.level === 1 ? 'level1_ended' : 'level2_ended',

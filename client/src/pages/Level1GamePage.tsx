@@ -62,8 +62,10 @@ export const Level1GamePage: React.FC = () => {
       loadProgress();
     };
     socket.on('round:ended', handleRoundEnded);
+    socket.on('game:state_changed', handleRoundEnded);
     return () => {
       socket.off('round:ended', handleRoundEnded);
+      socket.off('game:state_changed', handleRoundEnded);
       if (advanceTimer.current) clearTimeout(advanceTimer.current);
     };
   }, [loadProgress, refreshGameState]);
@@ -159,17 +161,17 @@ export const Level1GamePage: React.FC = () => {
         </div>
         <div className="space-y-2">
           <span className="text-xs font-mono uppercase tracking-widest text-[#737373] font-bold">
-            {isCompleted ? 'ROUND 1 COMPLETE' : 'ROUND 1 ENDED'}
+            {isCompleted ? 'LEVEL 1 COMPLETE' : 'LEVEL 1 ENDED'}
           </span>
           <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#171717]">
-            {isCompleted ? 'All questions answered' : 'Round 1 has ended'}
+            {isCompleted ? 'All questions answered' : 'Level 1 has ended'}
           </h1>
           <p className="text-xs sm:text-sm text-[#737373] max-w-md mx-auto leading-relaxed">
-            Your responses are recorded. Please wait — the host will start Round 2 for qualified teams.
+            Your responses are recorded. Please wait — the host will start Level 2 for qualified teams.
           </p>
         </div>
         <div className="p-6 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5] max-w-xs mx-auto space-y-1">
-          <span className="text-xs font-mono text-[#737373] uppercase font-bold">Total Round 1 Score</span>
+          <span className="text-xs font-mono text-[#737373] uppercase font-bold">Total Level 1 Score</span>
           <div className="text-4xl font-heading font-bold text-[#171717] font-mono">
             {team?.level1_score ?? 0} <span className="text-base text-[#737373] font-normal">pts</span>
           </div>

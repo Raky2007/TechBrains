@@ -53,7 +53,7 @@ export const Round1SettingsPage: React.FC = () => {
         body: JSON.stringify(settings)
       });
       setSettings(res.settings);
-      setFeedback({ message: 'Round 1 settings saved.' });
+      setFeedback({ message: 'Level 1 settings saved.' });
     } catch (err: any) {
       setFeedback({ message: err.message || 'Failed to save settings.', isError: true });
     } finally {
@@ -64,7 +64,7 @@ export const Round1SettingsPage: React.FC = () => {
   if (isLoading || !settings || !gameState) {
     return (
       <div className="font-mono text-sm text-[#737373] flex items-center justify-center min-h-[50vh]">
-        Loading Round 1 settings…
+        Loading Level 1 settings…
       </div>
     );
   }
@@ -72,20 +72,20 @@ export const Round1SettingsPage: React.FC = () => {
   return (
     <div className="max-w-3xl mx-auto space-y-8">
       <div>
-        <h1 className="text-2xl font-heading font-bold text-[#171717]">Round 1 · Settings</h1>
+        <h1 className="text-2xl font-heading font-bold text-[#171717]">Level 1 · Settings</h1>
         <p className="text-xs text-[#737373] font-mono mt-0.5">
           AI vs Human discernment — timer and configuration.
         </p>
       </div>
 
-      {/* Quick link to Round 1 questions */}
+      {/* Quick link to Level 1 questions */}
       <Link
         to="/admin/questions"
         className="flex items-center justify-between bg-[#F5F5F2] border border-[#E5E5E5] rounded-xl px-5 py-4 hover:bg-[#E5E5E5]/60 transition-colors"
       >
         <span className="flex items-center gap-2.5 text-sm font-heading font-bold text-[#171717]">
           <HelpCircle className="w-4 h-4" />
-          Manage Round 1 Questions
+          Manage Level 1 Questions
         </span>
         <ArrowRight className="w-4 h-4 text-[#737373]" />
       </Link>
@@ -101,7 +101,7 @@ export const Round1SettingsPage: React.FC = () => {
 
         <div>
           <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
-            Round 1 Qualification Cutoff Score
+            Level 1 Qualification Cutoff Score
           </label>
           <input
             type="number"
@@ -112,14 +112,14 @@ export const Round1SettingsPage: React.FC = () => {
             className="w-full max-w-[160px] px-4 py-2.5 bg-[#FFFFFF] border border-[#E5E5E5] rounded-xl text-[#171717] font-mono text-sm focus:outline-none focus:border-[#171717]"
           />
           <p className="text-[11px] text-[#737373] mt-1.5 leading-relaxed">
-            After Round 1 ends, only teams whose Round 1 score is <strong>at least this value</strong> qualify for Round 2.
+            After Level 1 ends, only teams whose Level 1 score is <strong>at least this value</strong> qualify for Level 2.
             Enforced server-side. Use 0 to let every team through.
           </p>
         </div>
 
         <div className="p-4 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5] text-[11px] text-[#737373] leading-relaxed">
-          Round 1 has no overall timer. Each question carries its own timer (set per question on the
-          <strong className="text-[#171717]"> Questions</strong> page); the round's total length is the sum of those timers.
+          Level 1 has no overall timer. Each question carries its own timer (set per question on the
+          <strong className="text-[#171717]"> Questions</strong> page); the level's total length is the sum of those timers.
         </div>
 
         <div className="flex items-center justify-between p-4 rounded-xl bg-[#F5F5F2] border border-[#E5E5E5]">
@@ -158,7 +158,7 @@ export const Round1SettingsPage: React.FC = () => {
             className="px-6 py-2.5 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all flex items-center gap-2 shadow-xs cursor-pointer"
           >
             {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            <span>Save Round 1 Settings</span>
+            <span>Save Level 1 Settings</span>
           </button>
         </div>
       </form>

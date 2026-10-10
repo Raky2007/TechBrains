@@ -129,9 +129,11 @@ CREATE TABLE IF NOT EXISTS clues (
     title TEXT NOT NULL,
     content TEXT NOT NULL,
     media_path TEXT,
-    credit_cost INTEGER NOT NULL DEFAULT 20,
+    credit_cost INTEGER NOT NULL DEFAULT 50,
     -- Which level's credit pool this clue should deduct from (1 or 2)
     required_level INTEGER NOT NULL DEFAULT 1 CHECK(required_level IN (1, 2)),
+    question_number INTEGER NOT NULL DEFAULT 1 CHECK(question_number IN (1, 2)),
+    tier TEXT NOT NULL DEFAULT 'simple' CHECK(tier IN ('simple', 'medium', 'high')),
     display_order INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     created_at TEXT NOT NULL,
@@ -166,6 +168,12 @@ CREATE TABLE IF NOT EXISTS conclusions (
     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     conclusion_text TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('draft', 'submitted', 'reopened')),
+    -- TechBrains Level 2 Question 1 & 2 additions
+    q1_pin TEXT,
+    q1_is_correct INTEGER DEFAULT 0,
+    q1_score REAL DEFAULT 0,
+    q2_selected_suspect TEXT,
+    q2_explanation TEXT,
     submitted_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(round_id, team_id)
@@ -194,7 +202,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 -- ============================================================
--- TechBrains additions: case media, media replays, AI evaluation
+-- TechBrains additions: case media, media replays, AI evaluation, question submissions
 -- ============================================================
 
 -- Multiple media assets per case (image / video / audio).
@@ -228,7 +236,7 @@ CREATE TABLE IF NOT EXISTS case_evaluations (
     conclusion_id TEXT NOT NULL UNIQUE REFERENCES conclusions(id) ON DELETE CASCADE,
     status TEXT NOT NULL CHECK(status IN ('pending', 'completed', 'failed')),
     score REAL,
-    max_score REAL NOT NULL DEFAULT 20,
+    max_score REAL NOT NULL DEFAULT 10,
     verdict TEXT,
     reasoning TEXT,
     provider TEXT,
@@ -238,8 +246,37 @@ CREATE TABLE IF NOT EXISTS case_evaluations (
     error_message TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     evaluator_id TEXT REFERENCES admin_users(id),
+    -- Question-level evaluation breakdown
+    q1_score REAL DEFAULT 0,
+    q2_score REAL DEFAULT 0,
+    q2_selected_suspect_correct INTEGER DEFAULT 0,
+    q2_closest_answer TEXT,
+    q2_accuracy_summary TEXT,
+    q2_matched_evidence TEXT,
+    q2_missing_evidence TEXT,
+    q2_feedback TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+-- Independent question submissions for Level 2 (Question 1 PIN & Question 2 Suspect/Reasoning)
+CREATE TABLE IF NOT EXISTS level2_question_submissions (
+    id TEXT PRIMARY KEY,
+    round_id TEXT NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    question_number INTEGER NOT NULL CHECK(question_number IN (1, 2)),
+    pin_submitted TEXT,
+    pin_normalized TEXT,
+    is_correct INTEGER,
+    selected_suspect TEXT,
+    explanation TEXT,
+    score REAL NOT NULL DEFAULT 0,
+    max_score REAL NOT NULL DEFAULT 5,
+    evaluation_status TEXT NOT NULL DEFAULT 'completed' CHECK(evaluation_status IN ('pending', 'completed', 'failed')),
+    evaluation_data_json TEXT,
+    submitted_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(round_id, team_id, question_number)
 );
 
 -- Final-answer immutability guard (defense-in-depth below the service layer):

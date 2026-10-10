@@ -5,7 +5,8 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(window.location.origin, {
+    const socketUrl = (import.meta as any).env?.VITE_SOCKET_URL || (import.meta as any).env?.VITE_API_URL || window.location.origin;
+    socket = io(socketUrl, {
       auth: (cb) => {
         cb({
           teamToken: getStoredTeamToken(),
@@ -29,18 +30,33 @@ export function getSocket(): Socket {
   return socket;
 }
 
+let lastTeamToken: string | null = null;
+let lastAdminToken: string | null = null;
+
 export function refreshSocketAuth(): void {
+  const currentTeam = getStoredTeamToken();
+  const currentAdmin = getStoredAdminToken();
+
   if (socket) {
     socket.auth = (cb: (data: any) => void) => {
       cb({
-        teamToken: getStoredTeamToken(),
-        adminToken: getStoredAdminToken()
+        teamToken: currentTeam,
+        adminToken: currentAdmin
       });
     };
-    if (socket.connected) {
-      socket.disconnect().connect();
-    } else {
+    if (currentTeam !== lastTeamToken || currentAdmin !== lastAdminToken) {
+      lastTeamToken = currentTeam;
+      lastAdminToken = currentAdmin;
+      if (socket.connected) {
+        socket.disconnect().connect();
+      } else {
+        socket.connect();
+      }
+    } else if (!socket.connected) {
       socket.connect();
     }
+  } else {
+    lastTeamToken = currentTeam;
+    lastAdminToken = currentAdmin;
   }
 }

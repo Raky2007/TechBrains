@@ -46,19 +46,19 @@ export const Navbar: React.FC<NavbarProps> = ({ team, stage, onLogout }) => {
     if (stage === 'round1' || stage === 'round1_done') {
       return [
         { label: 'Waiting Room', path: '/waiting' },
-        { label: 'Round 1', path: '/level1' }
+        { label: 'Level 1', path: '/level1' }
       ];
     }
     if (stage === 'round2' || stage === 'not_qualified') {
       return [
-        { label: 'Round 1', path: '/level1' },
-        { label: 'Round 2', path: '/level2' }
+        { label: 'Level 1', path: '/level1' },
+        { label: 'Level 2', path: '/level2' }
       ];
     }
     if (stage === 'result') {
       return [
-        { label: 'Round 1', path: '/level1' },
-        { label: 'Round 2', path: '/level2' },
+        { label: 'Level 1', path: '/level1' },
+        { label: 'Level 2', path: '/level2' },
         { label: 'Results', path: '/result' }
       ];
     }
@@ -81,7 +81,7 @@ export const Navbar: React.FC<NavbarProps> = ({ team, stage, onLogout }) => {
                 {BRANDING.shortTitle}
               </span>
               <span className="hidden sm:inline-block text-[11px] font-mono text-[#737373] ml-2 border-l border-[#E5E5E5] pl-2 font-medium">
-                Department of CSE · DAC
+                Department of CSM · DAC
               </span>
             </div>
           </Link>

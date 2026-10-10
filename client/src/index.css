@@ -12,6 +12,40 @@
     color: #171717;
   }
 
+  /* High-contrast brand-aligned text selection */
+  ::selection {
+    background-color: #FFC928 !important;
+    color: #171717 !important;
+  }
+
+  ::-moz-selection {
+    background-color: #FFC928 !important;
+    color: #171717 !important;
+  }
+
+  *::selection {
+    background-color: #FFC928 !important;
+    color: #171717 !important;
+  }
+
+  *::-moz-selection {
+    background-color: #FFC928 !important;
+    color: #171717 !important;
+  }
+
+  input::selection,
+  textarea::selection,
+  select::selection {
+    background-color: #FFC928 !important;
+    color: #171717 !important;
+  }
+
+  select,
+  option {
+    background-color: #FFFFFF;
+    color: #171717;
+  }
+
   /* Custom subtle clean scrollbar */
   ::-webkit-scrollbar {
     width: 6px;

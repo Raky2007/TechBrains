@@ -55,7 +55,10 @@ export async function apiFetch<T = any>(
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(endpoint, {
+  const apiBase = (import.meta as any).env?.VITE_API_URL || '';
+  const url = endpoint.startsWith('http') ? endpoint : `${apiBase}${endpoint}`;
+
+  const response = await fetch(url, {
     ...options,
     headers,
     credentials: 'include' // Always include cookies for same-origin LAN requests
@@ -69,6 +72,9 @@ export async function apiFetch<T = any>(
       if (errJson?.error) errorMessage = errJson.error;
     } catch (e) {
       // Non-JSON response
+      if (response.status === 502 || response.status === 503 || response.status === 504) {
+        errorMessage = 'Unable to connect to the backend server. Please verify the host server is running.';
+      }
     }
     const err: any = new Error(errorMessage);
     err.status = response.status;

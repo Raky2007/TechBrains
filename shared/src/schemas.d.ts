@@ -271,16 +271,19 @@ export declare const adminEvaluationOverrideSchema: z.ZodObject<{
     score: z.ZodNumber;
     verdict: z.ZodString;
     reasoning: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    q1_score: z.ZodOptional<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     conclusion_id: string;
     score: number;
     verdict: string;
     reasoning?: string | null | undefined;
+    q1_score?: number | undefined;
 }, {
     conclusion_id: string;
     score: number;
     verdict: string;
     reasoning?: string | null | undefined;
+    q1_score?: number | undefined;
 }>;
 export declare const adminSettingsSchema: z.ZodObject<{
     level1DurationMinutes: z.ZodOptional<z.ZodNumber>;

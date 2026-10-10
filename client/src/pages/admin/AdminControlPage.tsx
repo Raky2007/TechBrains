@@ -149,7 +149,7 @@ export const AdminControlPage: React.FC = () => {
                 L1
               </div>
               <h2 className="font-heading font-bold text-[#171717]">
-                Round 1: AI vs Human
+                Level 1: AI vs Human
               </h2>
             </div>
             <span className="text-xs font-mono text-[#737373]">
@@ -171,11 +171,11 @@ export const AdminControlPage: React.FC = () => {
                 ) : (
                   <Play className="w-4 h-4 fill-[#171717]" />
                 )}
-                <span>START ROUND 1</span>
+                <span>START LEVEL 1</span>
               </button>
             )}
 
-            {/* Round 1 has no overall timer to pause — per-question timers govern it. */}
+            {/* Level 1 has no overall timer to pause — per-question timers govern it. */}
 
             {/* End L1 */}
             {(status === 'level1_active' || status === 'level1_paused') && (
@@ -185,17 +185,17 @@ export const AdminControlPage: React.FC = () => {
                 onClick={() => {
                   setConfirmConfig({
                     isOpen: true,
-                    title: 'End Round 1 Early?',
-                    message: 'Ending the round early will immediately lock submissions and evaluate all registered teams.',
+                    title: 'End Level 1 Early?',
+                    message: 'Ending Level 1 early will immediately lock submissions and evaluate all registered teams.',
                     isDestructive: true,
-                    confirmLabel: 'End Round 1 Now',
+                    confirmLabel: 'End Level 1 Now',
                     action: async () => executeControl('end', 1)
                   });
                 }}
                 className="w-full py-2.5 px-4 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#B42318] hover:bg-[#B42318]/10 border border-[#B42318]/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <StopCircle className="w-4 h-4" />
-                <span>END ROUND 1</span>
+                <span>END LEVEL 1</span>
               </button>
             )}
 
@@ -203,7 +203,7 @@ export const AdminControlPage: React.FC = () => {
               status !== 'level1_active' &&
               status !== 'level1_paused' && (
                 <div className="p-3 rounded-lg bg-[#F5F5F2] border border-[#E5E5E5] text-xs font-mono text-[#737373] text-center">
-                  Round 1 completed and locked.
+                  Level 1 completed and locked.
                 </div>
               )}
           </div>
@@ -217,7 +217,7 @@ export const AdminControlPage: React.FC = () => {
                 L2
               </div>
               <h2 className="font-heading font-bold text-[#171717]">
-                Round 2: Clues & Credits
+                Level 2: Clues & Credits
               </h2>
             </div>
             <span className="text-xs font-mono text-[#737373]">
@@ -239,7 +239,7 @@ export const AdminControlPage: React.FC = () => {
                 ) : (
                   <Play className="w-4 h-4 fill-[#171717]" />
                 )}
-                <span>START ROUND 2</span>
+                <span>START LEVEL 2</span>
               </button>
             )}
 
@@ -252,7 +252,7 @@ export const AdminControlPage: React.FC = () => {
                 className="w-full py-3 px-4 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#FF8A24] bg-[#FFF0D6] border border-[#FF8A24]/40 hover:bg-[#ffe5b8] transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Pause className="w-4 h-4" />
-                <span>PAUSE ROUND 2 TIMER</span>
+                <span>PAUSE LEVEL 2 TIMER</span>
               </button>
             )}
 
@@ -265,7 +265,7 @@ export const AdminControlPage: React.FC = () => {
                 className="w-full py-3 px-4 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-[#171717]" />
-                <span>RESUME ROUND 2 TIMER</span>
+                <span>RESUME LEVEL 2 TIMER</span>
               </button>
             )}
 
@@ -277,17 +277,17 @@ export const AdminControlPage: React.FC = () => {
                 onClick={() => {
                   setConfirmConfig({
                     isOpen: true,
-                    title: 'End Round 2 Early?',
-                    message: 'Ending the round early will lock further clue purchases and conclusions.',
+                    title: 'End Level 2 Early?',
+                    message: 'Ending Level 2 early will lock further clue purchases and conclusions.',
                     isDestructive: true,
-                    confirmLabel: 'End Round 2 Now',
+                    confirmLabel: 'End Level 2 Now',
                     action: async () => executeControl('end', 2)
                   });
                 }}
                 className="w-full py-2.5 px-4 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#B42318] hover:bg-[#B42318]/10 border border-[#B42318]/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <StopCircle className="w-4 h-4" />
-                <span>END ROUND 2</span>
+                <span>END LEVEL 2</span>
               </button>
             )}
 
@@ -296,8 +296,8 @@ export const AdminControlPage: React.FC = () => {
               status !== 'level2_paused' && (
                 <div className="p-3 rounded-lg bg-[#F5F5F2] border border-[#E5E5E5] text-xs font-mono text-[#737373] text-center">
                   {status === 'idle'
-                    ? 'Awaiting Round 1 completion first.'
-                    : 'Round 2 concluded.'}
+                    ? 'Awaiting Level 1 completion first.'
+                    : 'Level 2 concluded.'}
                 </div>
               )}
           </div>
@@ -319,7 +319,7 @@ export const AdminControlPage: React.FC = () => {
               setConfirmConfig({
                 isOpen: true,
                 title: 'Complete the Event?',
-                message: 'This ends any active round and marks the entire event as complete. Results are published separately.',
+                message: 'This ends any active level and marks the entire event as complete. Results are published separately.',
                 isDestructive: false,
                 confirmLabel: 'Complete Event',
                 action: async () => executeControl('complete_event')

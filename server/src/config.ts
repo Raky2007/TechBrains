@@ -19,6 +19,9 @@ export const CONFIG = {
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || 'nexus_forensics_2026!',
   SESSION_SECRET: process.env.SESSION_SECRET || 'nexus_lan_forensic_cryptographic_secret_key_88492019',
   
+  CLIENT_URL: process.env.CLIENT_URL || '',
+  CORS_ORIGIN: process.env.CORS_ORIGIN || '',
+
   DATABASE_PATH: path.resolve(__dirname, '../../', process.env.DATABASE_PATH || 'nexus.db'),
   UPLOAD_DIR: path.resolve(__dirname, '../uploads'),
   PUBLIC_DIR: path.resolve(__dirname, '../public'),

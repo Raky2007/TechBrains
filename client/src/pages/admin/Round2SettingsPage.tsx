@@ -54,7 +54,7 @@ export const Round2SettingsPage: React.FC = () => {
         body: JSON.stringify(settings)
       });
       setSettings(res.settings);
-      setFeedback({ message: 'Round 2 settings saved.' });
+      setFeedback({ message: 'Level 2 settings saved.' });
     } catch (err: any) {
       setFeedback({ message: err.message || 'Failed to save settings.', isError: true });
     } finally {
@@ -65,7 +65,7 @@ export const Round2SettingsPage: React.FC = () => {
   if (isLoading || !settings || !gameState) {
     return (
       <div className="font-mono text-sm text-[#737373] flex items-center justify-center min-h-[50vh]">
-        Loading Round 2 settings…
+        Loading Level 2 settings…
       </div>
     );
   }
@@ -73,20 +73,20 @@ export const Round2SettingsPage: React.FC = () => {
   return (
     <div className="max-w-3xl mx-auto space-y-8">
       <div>
-        <h1 className="text-2xl font-heading font-bold text-[#171717]">Round 2 · Settings</h1>
+        <h1 className="text-2xl font-heading font-bold text-[#171717]">Level 2 · Settings</h1>
         <p className="text-xs text-[#737373] font-mono mt-0.5">
           Case investigation — timer, credits and evaluation.
         </p>
       </div>
 
-      {/* Quick link to Round 2 cases & clues */}
+      {/* Quick link to Level 2 cases & clues */}
       <Link
         to="/admin/cases"
         className="flex items-center justify-between bg-[#F5F5F2] border border-[#E5E5E5] rounded-xl px-5 py-4 hover:bg-[#E5E5E5]/60 transition-colors"
       >
         <span className="flex items-center gap-2.5 text-sm font-heading font-bold text-[#171717]">
           <FolderSearch className="w-4 h-4" />
-          Manage Round 2 Cases, Clues &amp; Media
+          Manage Level 2 Cases, Clues &amp; Media
         </span>
         <ArrowRight className="w-4 h-4 text-[#737373]" />
       </Link>
@@ -103,7 +103,7 @@ export const Round2SettingsPage: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
           <div>
             <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
-              Round 2 Duration (Minutes)
+              Level 2 Duration (Minutes)
             </label>
             <input
               type="number"
@@ -131,7 +131,7 @@ export const Round2SettingsPage: React.FC = () => {
 
           <div>
             <label className="block text-xs font-heading font-bold uppercase tracking-wider text-[#171717] mb-1.5">
-              Round 2 Maximum Score
+              Level 2 Maximum Score
             </label>
             <input
               type="number"
@@ -167,7 +167,7 @@ export const Round2SettingsPage: React.FC = () => {
             className="px-6 py-2.5 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all flex items-center gap-2 shadow-xs cursor-pointer"
           >
             {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            <span>Save Round 2 Settings</span>
+            <span>Save Level 2 Settings</span>
           </button>
         </div>
       </form>

@@ -20,12 +20,16 @@ import {
   Level1AnswerChoice,
   PublicGameState,
   TeamPrivateState,
-  TeamStage
+  TeamStage,
+  Level2Q1Result,
+  Level2Q2Result,
+  Level2Q2Evaluation,
+  Level2QuestionSubmission
 } from '@nexus/shared';
 import { calculateLevel1Score, calculateAuthoritativeLeaderboard } from './scoringService.js';
 import { isRoundExpired, getAuthoritativeTimerState } from './timerService.js';
 import { logAuditAction } from './auditService.js';
-import { evaluateCaseAnswer, isAiConfigured } from './aiEvaluationService.js';
+import { evaluateCaseAnswer, isAiConfigured, EvaluationResult } from './aiEvaluationService.js';
 
 /**
  * Backfill any missing settings keys from defaults so sessions created before a
@@ -364,20 +368,41 @@ export class GameService {
   }
 
   /**
-   * End a round explicitly or automatically upon expiration
+   * End a round explicitly or automatically upon expiration.
+   * Supports exact round targeting via optional targetRoundId.
    */
-  static endRound(adminUserId: string | null, level: 1 | 2): { round: Round; session: GameSession } {
+  static endRound(
+    adminUserId: string | null,
+    level: 1 | 2,
+    targetRoundId?: string
+  ): { round: Round; session: GameSession } {
     const db = getDb();
     const { session } = this.getGameSession();
 
-    const round = db.prepare(`
-      SELECT * FROM rounds 
-      WHERE game_session_id = ? AND level = ? AND status IN ('active', 'paused')
-      ORDER BY created_at DESC LIMIT 1
-    `).get(session.id, level) as Round | undefined;
+    let round: Round | undefined;
 
-    if (!round) {
-      throw new Error(`No active or paused round found for Level ${level} to end.`);
+    if (targetRoundId) {
+      // Exact round targeting: must match the target ID, requested level, active session, and eligible status
+      round = db.prepare(`
+        SELECT * FROM rounds 
+        WHERE id = ? AND game_session_id = ? AND level = ? AND status IN ('active', 'paused')
+      `).get(targetRoundId, session.id, level) as Round | undefined;
+
+      if (!round) {
+        throw new Error(
+          `Target round "${targetRoundId}" is not an active or paused Level ${level} round in the current session.`
+        );
+      }
+    } else {
+      round = db.prepare(`
+        SELECT * FROM rounds 
+        WHERE game_session_id = ? AND level = ? AND status IN ('active', 'paused')
+        ORDER BY created_at DESC LIMIT 1
+      `).get(session.id, level) as Round | undefined;
+
+      if (!round) {
+        throw new Error(`No active or paused round found for Level ${level} to end.`);
+      }
     }
 
     const endedAt = new Date().toISOString();
@@ -400,7 +425,7 @@ export class GameService {
         db.prepare(`
           UPDATE teams 
           SET level1_score = (
-            SELECT COALESCE(SUM(awarded_points), 0) 
+            SELECT COALESCE(SUM(MAX(0, awarded_points)), 0) 
             FROM team_answers 
             WHERE team_answers.team_id = teams.id AND team_answers.round_id = ?
           )
@@ -452,7 +477,8 @@ export class GameService {
   }
 
   /**
-   * Reset game session cleanly
+   * Reset game session cleanly.
+   * Closes obsolete active or paused rounds belonging to the session being reset.
    */
   static resetGame(adminUserId: string): GameSession {
     const db = getDb();
@@ -460,10 +486,21 @@ export class GameService {
     const now = new Date().toISOString();
     const settingsJson = JSON.stringify(CONFIG.DEFAULT_SETTINGS);
 
-    db.prepare(`
-      INSERT INTO game_sessions (id, name, status, current_level, settings_json, created_at, updated_at)
-      VALUES (?, ?, 'idle', NULL, ?, ?, ?)
-    `).run(newSessionId, `TechBrains Session ${new Date().toLocaleTimeString()}`, settingsJson, now, now);
+    const runTransaction = db.transaction(() => {
+      // Close any active or paused rounds so they cannot linger as active in the background
+      db.prepare(`
+        UPDATE rounds 
+        SET status = 'ended', ended_at = ? 
+        WHERE status IN ('active', 'paused')
+      `).run(now);
+
+      db.prepare(`
+        INSERT INTO game_sessions (id, name, status, current_level, settings_json, created_at, updated_at)
+        VALUES (?, ?, 'idle', NULL, ?, ?, ?)
+      `).run(newSessionId, `TechBrains Session ${new Date().toLocaleTimeString()}`, settingsJson, now, now);
+    });
+
+    runTransaction();
 
     logAuditAction(adminUserId, 'RESET_GAME', 'game_sessions', newSessionId);
     return db.prepare('SELECT * FROM game_sessions WHERE id = ?').get(newSessionId) as GameSession;
@@ -554,7 +591,7 @@ export class GameService {
 
       db.prepare(`
         UPDATE teams
-        SET level1_score = level1_score + ?, updated_at = ?
+        SET level1_score = MAX(0, level1_score + ?), updated_at = ?
         WHERE id = ?
       `).run(awardedPoints, now, teamId);
 
@@ -679,7 +716,294 @@ export class GameService {
   }
 
   /**
-   * Submit the team's ONE irreversible final answer for Round 2.
+   * Question 1: Crack the Vault Keypad
+   * Deterministic server-side validation (no AI model).
+   * Awards 5 points for correct normalized PIN (0728, 728, 7:28), 0 points otherwise.
+   */
+  static submitLevel2Question1(teamId: string, pin: string): Level2Q1Result {
+    const db = getDb();
+    const { activeRound } = this.getGameSession();
+
+    if (!activeRound || activeRound.level !== 2 || activeRound.status !== 'active') {
+      throw new Error('Level 2 is not currently active for submission.');
+    }
+
+    this.assertRound2Qualified(teamId);
+
+    if (isRoundExpired(activeRound)) {
+      throw new Error('Level 2 time limit has expired. No further submissions are accepted.');
+    }
+
+    const trimmed = (pin ?? '').trim();
+    if (!trimmed) {
+      throw new Error('Please enter a PIN to submit.');
+    }
+
+    // Check if Question 1 has already been submitted
+    const existing = db.prepare(`
+      SELECT * FROM level2_question_submissions
+      WHERE round_id = ? AND team_id = ? AND question_number = 1
+    `).get(activeRound.id, teamId) as Level2QuestionSubmission | undefined;
+
+    if (existing) {
+      throw new Error('Question 1 has already been submitted and cannot be changed.');
+    }
+
+    const isCorrect = isVaultPinCorrect(trimmed);
+    const score = isCorrect ? 5 : 0;
+    const normalized = normalizeVaultPin(trimmed);
+    const id = uuidv4();
+    const now = new Date().toISOString();
+
+    const tx = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO level2_question_submissions (
+          id, round_id, team_id, question_number, pin_submitted, pin_normalized,
+          is_correct, selected_suspect, explanation, score, max_score,
+          evaluation_status, evaluation_data_json, submitted_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?, ?, NULL, NULL, ?, 5, 'completed', NULL, ?, ?)
+      `).run(id, activeRound.id, teamId, trimmed, normalized, isCorrect ? 1 : 0, score, now, now);
+
+      db.prepare(`
+        UPDATE teams
+        SET level2_score = (
+          SELECT COALESCE(SUM(score), 0)
+          FROM level2_question_submissions
+          WHERE team_id = ? AND round_id = ?
+        ), updated_at = ?
+        WHERE id = ?
+      `).run(teamId, activeRound.id, now, teamId);
+    });
+    tx();
+
+    logAuditAction(null, 'LEVEL2_Q1_SUBMITTED', 'level2_question_submissions', id, {
+      teamId,
+      isCorrect,
+      score
+    });
+
+    return {
+      is_submitted: true,
+      submitted_pin: trimmed,
+      is_correct: isCorrect,
+      score,
+      max_score: 5,
+      submitted_at: now
+    };
+  }
+
+  /**
+   * Question 2: Who Took ORION? (Suspect identification & reasoning)
+   * Evaluated via NVIDIA Nemotron / AI provider (max 5 points).
+   */
+  static async submitLevel2Question2(
+    teamId: string,
+    selectedSuspect: string,
+    explanation: string
+  ): Promise<Level2Q2Result> {
+    const db = getDb();
+    const { activeRound } = this.getGameSession();
+
+    if (!activeRound || activeRound.level !== 2 || activeRound.status !== 'active') {
+      throw new Error('Level 2 is not currently active for submission.');
+    }
+
+    this.assertRound2Qualified(teamId);
+
+    if (isRoundExpired(activeRound)) {
+      throw new Error('Level 2 time limit has expired. No further submissions are accepted.');
+    }
+
+    const trimmedSuspect = (selectedSuspect ?? '').trim();
+    if (!trimmedSuspect) {
+      throw new Error('Please select a suspect.');
+    }
+
+    const trimmedExp = (explanation ?? '').trim();
+    if (trimmedExp.length < 10) {
+      throw new Error('Explanation must be at least 10 characters long.');
+    }
+
+    // Check if Question 2 has already been submitted
+    const existing = db.prepare(`
+      SELECT * FROM level2_question_submissions
+      WHERE round_id = ? AND team_id = ? AND question_number = 2
+    `).get(activeRound.id, teamId) as Level2QuestionSubmission | undefined;
+
+    if (existing) {
+      throw new Error('Question 2 has already been submitted and cannot be changed.');
+    }
+
+    const subId = uuidv4();
+    const now = new Date().toISOString();
+
+    let conclusion = db.prepare(`
+      SELECT * FROM conclusions WHERE round_id = ? AND team_id = ?
+    `).get(activeRound.id, teamId) as Conclusion | undefined;
+
+    const conclusionId = conclusion ? conclusion.id : uuidv4();
+
+    // Insert pending submission into level2_question_submissions
+    const initTx = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO level2_question_submissions (
+          id, round_id, team_id, question_number, pin_submitted, pin_normalized,
+          is_correct, selected_suspect, explanation, score, max_score,
+          evaluation_status, evaluation_data_json, submitted_at, updated_at
+        ) VALUES (?, ?, ?, 2, NULL, NULL, NULL, ?, ?, 0, 5, 'pending', NULL, ?, ?)
+      `).run(subId, activeRound.id, teamId, trimmedSuspect, trimmedExp, now, now);
+
+      if (!conclusion) {
+        db.prepare(`
+          INSERT INTO conclusions (
+            id, round_id, team_id, conclusion_text, status,
+            q2_selected_suspect, q2_explanation, submitted_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'submitted', ?, ?, ?, ?)
+        `).run(
+          conclusionId,
+          activeRound.id,
+          teamId,
+          `Selected Suspect: ${trimmedSuspect}\n\nEvidence & Reasoning:\n${trimmedExp}`,
+          trimmedSuspect,
+          trimmedExp,
+          now,
+          now
+        );
+
+        db.prepare(`
+          INSERT INTO case_evaluations (
+            id, conclusion_id, status, max_score, source, is_overridden, attempt_count, created_at, updated_at
+          ) VALUES (?, ?, 'pending', 5, 'ai', 0, 0, ?, ?)
+        `).run(uuidv4(), conclusionId, now, now);
+      }
+    });
+    initTx();
+
+    const activeCase = db.prepare('SELECT * FROM level2_cases WHERE is_active = 1 LIMIT 1').get() as Level2Case | undefined;
+
+    let evalResult: EvaluationResult;
+    try {
+      evalResult = await evaluateCaseAnswer({
+        caseTitle: activeCase?.title || 'The Vanishing Prototype',
+        caseSituation: activeCase?.situation_description || '',
+        referenceAnswer: activeCase?.reference_answer ?? null,
+        evaluationGuidance: activeCase?.evaluation_guidance ?? null,
+        teamAnswer: trimmedExp,
+        selectedSuspect: trimmedSuspect,
+        explanation: trimmedExp,
+        maxScore: 5
+      });
+    } catch (err: any) {
+      const failAt = new Date().toISOString();
+      const errorMsg = String(err?.message || err).slice(0, 500);
+
+      db.prepare(`
+        UPDATE level2_question_submissions
+        SET evaluation_status = 'failed', updated_at = ?
+        WHERE id = ?
+      `).run(failAt, subId);
+
+      db.prepare(`
+        UPDATE case_evaluations
+        SET status = 'failed', error_message = ?, updated_at = ?
+        WHERE conclusion_id = ? AND is_overridden = 0
+      `).run(errorMsg, failAt, conclusionId);
+
+      logAuditAction(null, 'AI_EVALUATION_FAILED', 'level2_question_submissions', subId, {
+        teamId, error: errorMsg
+      });
+
+      return {
+        is_submitted: true,
+        selected_suspect: trimmedSuspect,
+        explanation: trimmedExp,
+        score: 0,
+        max_score: 5,
+        evaluation: {
+          score: 0,
+          max_score: 5,
+          selected_suspect_correct: trimmedSuspect.toLowerCase().includes('kabir'),
+          closest_answer: 'Evaluation pending admin review.',
+          accuracy_summary: 'Evaluation service temporarily unavailable.',
+          matched_evidence: [],
+          missing_evidence: [],
+          feedback: 'Your submission has been safely recorded. An administrator will review your reasoning.',
+          status: 'failed'
+        },
+        submitted_at: now
+      };
+    }
+
+    const doneAt = new Date().toISOString();
+
+    const saveTx = db.transaction(() => {
+      // Check if admin manually overrode in the interim
+      const currentEval = db.prepare(`SELECT is_overridden, score FROM case_evaluations WHERE conclusion_id = ?`).get(conclusionId) as any;
+      if (currentEval?.is_overridden === 1) {
+        return;
+      }
+
+      db.prepare(`
+        UPDATE level2_question_submissions
+        SET score = ?, evaluation_status = 'completed', evaluation_data_json = ?, updated_at = ?
+        WHERE id = ?
+      `).run(evalResult.score, JSON.stringify(evalResult), doneAt, subId);
+
+      db.prepare(`
+        UPDATE case_evaluations
+        SET status = 'completed', score = ?, max_score = 5, verdict = ?, reasoning = ?,
+            provider = ?, model = ?, source = 'ai', is_overridden = 0, error_message = NULL,
+            q2_score = ?, q2_selected_suspect_correct = ?, q2_closest_answer = ?,
+            q2_accuracy_summary = ?, q2_matched_evidence = ?, q2_missing_evidence = ?,
+            q2_feedback = ?, updated_at = ?
+        WHERE conclusion_id = ?
+      `).run(
+        evalResult.score,
+        evalResult.verdict,
+        evalResult.reasoning,
+        evalResult.provider,
+        evalResult.model,
+        evalResult.score,
+        evalResult.selected_suspect_correct ? 1 : 0,
+        evalResult.closest_answer,
+        evalResult.accuracy_summary,
+        JSON.stringify(evalResult.matched_evidence),
+        JSON.stringify(evalResult.missing_evidence),
+        evalResult.feedback,
+        doneAt,
+        conclusionId
+      );
+
+      // Re-calculate team level2_score
+      db.prepare(`
+        UPDATE teams
+        SET level2_score = (
+          SELECT COALESCE(SUM(score), 0)
+          FROM level2_question_submissions
+          WHERE team_id = ? AND round_id = ?
+        ), updated_at = ?
+        WHERE id = ?
+      `).run(teamId, activeRound.id, doneAt, teamId);
+    });
+    saveTx();
+
+    logAuditAction(null, 'AI_EVALUATION_COMPLETED', 'level2_question_submissions', subId, {
+      teamId, score: evalResult.score, provider: evalResult.provider
+    });
+
+    return {
+      is_submitted: true,
+      selected_suspect: trimmedSuspect,
+      explanation: trimmedExp,
+      score: evalResult.score,
+      max_score: 5,
+      evaluation: evalResult,
+      submitted_at: now
+    };
+  }
+
+  /**
+   * Submit the team's ONE irreversible final answer for Round 2 (legacy backward compatibility).
    *
    * TechBrains rule: exactly one submission per team. Once submitted the answer
    * is immutable — enforced here in the service layer, backed by the
@@ -843,7 +1167,8 @@ export class GameService {
     conclusionId: string,
     score: number,
     verdict: string,
-    reasoning: string | null
+    reasoning: string | null,
+    q1ScoreOverride?: number
   ): CaseEvaluation {
     const db = getDb();
     const conclusion = db.prepare('SELECT * FROM conclusions WHERE id = ?').get(conclusionId) as Conclusion | undefined;
@@ -857,20 +1182,41 @@ export class GameService {
     const now = new Date().toISOString();
 
     const tx = db.transaction(() => {
+      const q1Sub = db.prepare('SELECT * FROM level2_question_submissions WHERE team_id = ? AND question_number = 1').get(conclusion.team_id) as Level2QuestionSubmission | undefined;
+      const q2Sub = db.prepare('SELECT * FROM level2_question_submissions WHERE team_id = ? AND question_number = 2').get(conclusion.team_id) as Level2QuestionSubmission | undefined;
+
+      let finalQ1 = q1Sub ? q1Sub.score : 0;
+      if (q1ScoreOverride !== undefined) {
+        finalQ1 = Math.max(0, Math.min(5, Math.round(q1ScoreOverride * 100) / 100));
+        if (q1Sub) {
+          db.prepare('UPDATE level2_question_submissions SET score = ?, is_correct = ?, updated_at = ? WHERE id = ?')
+            .run(finalQ1, finalQ1 > 0 ? 1 : 0, now, q1Sub.id);
+        }
+      }
+
+      const clampedQ2 = Math.min(5, clamped);
+      if (q2Sub) {
+        db.prepare('UPDATE level2_question_submissions SET score = ?, updated_at = ? WHERE id = ?')
+          .run(clampedQ2, now, q2Sub.id);
+      }
+
+      const totalL2 = (q1Sub || q2Sub) ? (finalQ1 + clampedQ2) : clamped;
+
       db.prepare(`
         UPDATE case_evaluations
         SET status = 'completed', score = ?, max_score = ?, verdict = ?, reasoning = ?,
-            source = 'manual', is_overridden = 1, evaluator_id = ?, error_message = NULL, updated_at = ?
+            source = 'manual', is_overridden = 1, evaluator_id = ?, error_message = NULL,
+            q1_score = ?, q2_score = ?, updated_at = ?
         WHERE conclusion_id = ?
-      `).run(clamped, maxScore, verdict, reasoning, adminUserId, now, conclusionId);
+      `).run(clamped, maxScore, verdict, reasoning, adminUserId, finalQ1, clampedQ2, now, conclusionId);
 
       db.prepare(`UPDATE teams SET level2_score = ?, updated_at = ? WHERE id = ?`)
-        .run(clamped, now, conclusion.team_id);
+        .run(totalL2, now, conclusion.team_id);
     });
     tx();
 
     logAuditAction(adminUserId, 'EVALUATION_OVERRIDE', 'case_evaluations', conclusionId, {
-      teamId: conclusion.team_id, score: clamped
+      teamId: conclusion.team_id, score: clamped, q1Score: q1ScoreOverride
     });
 
     return db.prepare('SELECT * FROM case_evaluations WHERE conclusion_id = ?').get(conclusionId) as CaseEvaluation;
@@ -882,6 +1228,10 @@ export class GameService {
    */
   static isTeamLocked(roundId: string, teamId: string): boolean {
     const db = getDb();
+    const q2 = db.prepare(
+      `SELECT id FROM level2_question_submissions WHERE round_id = ? AND team_id = ? AND question_number = 2`
+    ).get(roundId, teamId);
+    if (q2) return true;
     const row = db.prepare(
       `SELECT status FROM conclusions WHERE round_id = ? AND team_id = ?`
     ).get(roundId, teamId) as { status: string } | undefined;
@@ -1201,7 +1551,21 @@ export class GameService {
       let clientClues: ClientClue[] = [];
 
       const conclusion = db.prepare('SELECT * FROM conclusions WHERE round_id = ? AND team_id = ?').get(activeRound.id, teamId) as Conclusion | undefined;
-      const isLocked = conclusion?.status === 'submitted';
+
+      const q1Row = db.prepare(`
+        SELECT * FROM level2_question_submissions
+        WHERE round_id = ? AND team_id = ? AND question_number = 1
+      `).get(activeRound.id, teamId) as Level2QuestionSubmission | undefined;
+
+      const q2Row = db.prepare(`
+        SELECT * FROM level2_question_submissions
+        WHERE round_id = ? AND team_id = ? AND question_number = 2
+      `).get(activeRound.id, teamId) as Level2QuestionSubmission | undefined;
+
+      const isLocked = Boolean(
+        (q2Row && (q2Row.evaluation_status === 'completed' || q2Row.evaluation_status === 'pending')) ||
+        (conclusion && conclusion.status === 'submitted')
+      );
 
       if (activeCase) {
         const allClues = db.prepare('SELECT * FROM clues WHERE case_id = ? AND is_active = 1 ORDER BY display_order ASC').all(activeCase.id) as Clue[];
@@ -1216,6 +1580,8 @@ export class GameService {
             title: c.title,
             credit_cost: c.credit_cost,
             display_order: c.display_order,
+            question_number: c.question_number,
+            tier: c.tier,
             is_unlocked: isUnlocked,
             content: isUnlocked ? c.content : undefined, // Never leak locked content
             unlocked_at: unlockedMap.get(c.id)
@@ -1239,6 +1605,34 @@ export class GameService {
         ? (db.prepare('SELECT * FROM case_evaluations WHERE conclusion_id = ?').get(conclusion.id) as CaseEvaluation | undefined)
         : undefined;
 
+      const q1Result: Level2Q1Result | undefined = q1Row ? {
+        is_submitted: true,
+        submitted_pin: q1Row.pin_submitted,
+        is_correct: Boolean(q1Row.is_correct),
+        score: q1Row.score,
+        max_score: q1Row.max_score,
+        submitted_at: q1Row.submitted_at
+      } : undefined;
+
+      let q2Eval: Level2Q2Evaluation | null = null;
+      if (q2Row?.evaluation_data_json) {
+        try {
+          q2Eval = JSON.parse(q2Row.evaluation_data_json);
+        } catch {
+          q2Eval = null;
+        }
+      }
+
+      const q2Result: Level2Q2Result | undefined = q2Row ? {
+        is_submitted: true,
+        selected_suspect: q2Row.selected_suspect,
+        explanation: q2Row.explanation,
+        score: q2Row.score,
+        max_score: q2Row.max_score,
+        evaluation: q2Eval,
+        submitted_at: q2Row.submitted_at
+      } : undefined;
+
       level2State = {
         case: activeCase ? {
           id: activeCase.id,
@@ -1249,6 +1643,8 @@ export class GameService {
         media: mediaState,
         clues: clientClues,
         is_locked: isLocked,
+        q1: q1Result,
+        q2: q2Result,
         conclusion: conclusion ? {
           text: conclusion.conclusion_text,
           status: conclusion.status,
@@ -1276,12 +1672,14 @@ export class GameService {
       qualified: round2Qualified
     });
 
+    const levelCredits = this.getLevelBalance(team.id, 1);
+
     return {
       stage,
       team: {
         id: team.id,
         team_name: team.team_name,
-        current_credits: team.current_credits,
+        current_credits: levelCredits !== null ? levelCredits : team.current_credits,
         level1_score: team.level1_score,
         level2_score: team.level2_score
       },
@@ -1483,3 +1881,21 @@ export class GameService {
     return { charged: true, remaining: balance - amount };
   }
 }
+
+/**
+ * Vault Keypad PIN Normalization and Validation (Question 1)
+ * Expected answer: 0728
+ * Acceptable formats: 0728, 728, 7:28 (spaces/dashes stripped).
+ * Permutations (e.g. 2780, 8270) are rejected.
+ */
+export function normalizeVaultPin(input: string): string {
+  if (!input || typeof input !== 'string') return '';
+  const cleaned = input.trim().replace(/[\s\-:]/g, '');
+  if (cleaned === '728') return '0728';
+  return cleaned;
+}
+
+export function isVaultPinCorrect(input: string): boolean {
+  return normalizeVaultPin(input) === '0728';
+}
+

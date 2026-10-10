@@ -18,7 +18,7 @@ type OwnResult = Omit<LeaderboardEntry, 'rank'>;
  * standings endpoint is admin-only.
  */
 export const MyResultPage: React.FC = () => {
-  const { team } = useTeam();
+  const { team, gameState } = useTeam();
   const [result, setResult] = useState<OwnResult | null>(null);
   const [isPublished, setIsPublished] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -44,14 +44,25 @@ export const MyResultPage: React.FC = () => {
     fetchResult();
 
     const socket = getSocket();
-    // Participants only receive a scores-free "results published" signal; they
-    // then fetch their OWN result. They never receive global standings.
-    const handlePublished = () => fetchResult();
+    const handlePublished = () => {
+      fetchResult();
+    };
+
     socket.on('results:published', handlePublished);
+    socket.on('game:state_changed', handlePublished);
+
     return () => {
       socket.off('results:published', handlePublished);
+      socket.off('game:state_changed', handlePublished);
     };
   }, []);
+
+  // React immediately whenever gameState updates via context
+  useEffect(() => {
+    if (gameState?.settings?.resultsPublished || gameState?.status === 'completed') {
+      fetchResult();
+    }
+  }, [gameState?.settings?.resultsPublished, gameState?.status]);
 
   if (isLoading) {
     return (
@@ -74,8 +85,8 @@ export const MyResultPage: React.FC = () => {
   }
 
   const stats = [
-    { label: 'Round 1', value: `${result.level1_score} pts`, sub: `${result.level1_accuracy_percent}% accuracy` },
-    { label: 'Round 2', value: `${result.level2_score} pts`, sub: `${result.credits_spent} credits used` },
+    { label: 'Level 1', value: `${result.level1_score} pts`, sub: `${result.level1_accuracy_percent}% accuracy` },
+    { label: 'Level 2', value: `${result.level2_score} pts`, sub: `${result.credits_spent} credits used` },
   ];
 
   return (

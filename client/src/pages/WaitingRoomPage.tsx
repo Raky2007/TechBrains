@@ -28,7 +28,7 @@ export const WaitingRoomPage: React.FC = () => {
             TechBrains
           </h1>
           <p className="text-xs font-mono uppercase tracking-[0.2em] text-[#737373]">
-            Department of CSE · DAC
+            Department of CSM · DAC
           </p>
         </div>
 
@@ -64,7 +64,7 @@ export const WaitingRoomPage: React.FC = () => {
             </p>
             <p className="text-xs text-[#737373] font-body leading-relaxed">
               The event will begin automatically on your screen when the
-              administrator starts the round. No action is needed from you.
+              administrator starts the level. No action is needed from you.
             </p>
           </div>
         </div>

@@ -59,7 +59,7 @@ export const RoundControlPanel: React.FC<RoundControlPanelProps> = ({ level, gam
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <span className="text-xs font-heading font-bold text-[#171717] uppercase tracking-wider">
-          {hasOverallTimer ? `Round ${level} Timer Control` : `Round ${level} Controls`}
+          {hasOverallTimer ? `Level ${level} Timer Control` : `Level ${level} Controls`}
         </span>
         {showTimer && round && (
           <CountdownTimer
@@ -79,7 +79,7 @@ export const RoundControlPanel: React.FC<RoundControlPanelProps> = ({ level, gam
             className="px-4 py-2.5 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#171717] bg-[#FFC928] hover:bg-[#F5BE18] active:bg-[#E0AD0E] transition-all flex items-center gap-2 shadow-xs cursor-pointer"
           >
             <Play className="w-4 h-4 fill-[#171717]" />
-            <span>Start Round {level}</span>
+            <span>Start Level {level}</span>
           </button>
         )}
         {isActive && hasOverallTimer && (
@@ -112,16 +112,16 @@ export const RoundControlPanel: React.FC<RoundControlPanelProps> = ({ level, gam
             className="px-4 py-2.5 rounded-xl font-heading font-bold text-xs tracking-wider uppercase text-[#B42318] hover:bg-[#B42318]/10 border border-[#B42318]/30 transition-all flex items-center gap-2 cursor-pointer"
           >
             <StopCircle className="w-4 h-4" />
-            <span>End Round {level}</span>
+            <span>End Level {level}</span>
           </button>
         )}
         {!canStart && !isActive && !isPaused && (
           <div className="px-3 py-2.5 rounded-lg bg-[#F5F5F2] border border-[#E5E5E5] text-xs font-mono text-[#737373]">
             {level === 1
-              ? 'Round 1 has concluded.'
+              ? 'Level 1 has concluded.'
               : status === 'idle' || status === 'level1_active' || status === 'level1_paused'
-              ? 'Available once Round 1 has ended.'
-              : 'Round 2 has concluded.'}
+              ? 'Available once Level 1 has ended.'
+              : 'Level 2 has concluded.'}
           </div>
         )}
       </div>

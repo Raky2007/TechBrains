@@ -203,6 +203,8 @@ export interface Clue {
     media_path: string | null;
     credit_cost: number;
     display_order: number;
+    question_number: 1 | 2;
+    tier: 'simple' | 'medium' | 'high';
     is_active: number;
     created_at: string;
     updated_at: string;
@@ -216,9 +218,58 @@ export interface ClientClue {
     title: string;
     credit_cost: number;
     display_order: number;
+    question_number: 1 | 2;
+    tier: 'simple' | 'medium' | 'high';
     is_unlocked: boolean;
     content?: string;
     unlocked_at?: string;
+}
+export interface Level2Q1Result {
+    is_submitted: boolean;
+    submitted_pin: string | null;
+    is_correct: boolean | null;
+    score: number;
+    max_score: number;
+    submitted_at?: string | null;
+}
+export interface Level2Q2Evaluation {
+    score: number;
+    max_score: number;
+    selected_suspect_correct: boolean;
+    closest_answer: string;
+    accuracy_summary: string;
+    matched_evidence: string[] | string;
+    missing_evidence: string[] | string;
+    feedback: string;
+    status: EvaluationStatus;
+    verdict?: string;
+    reasoning?: string;
+}
+export interface Level2Q2Result {
+    is_submitted: boolean;
+    selected_suspect: string | null;
+    explanation: string | null;
+    score: number | null;
+    max_score: number;
+    evaluation?: Level2Q2Evaluation | null;
+    submitted_at?: string | null;
+}
+export interface Level2QuestionSubmission {
+    id: string;
+    round_id: string;
+    team_id: string;
+    question_number: 1 | 2;
+    pin_submitted: string | null;
+    pin_normalized: string | null;
+    is_correct: boolean | null;
+    selected_suspect: string | null;
+    explanation: string | null;
+    score: number;
+    max_score: number;
+    evaluation_status: EvaluationStatus;
+    evaluation_data_json: string | null;
+    submitted_at: string;
+    updated_at: string;
 }
 /**
  * Case media item sent to team (only delivered while media is viewable)
@@ -375,6 +426,8 @@ export interface TeamPrivateState {
         clues: ClientClue[];
         /** True once this team has made its one irreversible final submission. */
         is_locked: boolean;
+        q1?: Level2Q1Result;
+        q2?: Level2Q2Result;
         conclusion: {
             text: string;
             status: ConclusionStatus;

@@ -36,6 +36,7 @@ async function startServer() {
         if (isAllowedLanOrigin(origin)) {
           callback(null, true);
         } else {
+          console.warn(`[CORS Socket.IO] Rejected untrusted origin: "${origin}"`);
           callback(new Error('CORS origin not allowed on LAN server'));
         }
       },
@@ -50,7 +51,7 @@ async function startServer() {
   // 4. Timer Service & Authoritative Deadline monitor
   registerTimerCallbacks(io, async (expiredRound) => {
     try {
-      const result = GameService.endRound(null, expiredRound.level);
+      const result = GameService.endRound(null, expiredRound.level, expiredRound.id);
       broadcastRoundEvent('round:ended', { level: expiredRound.level, round: result.round });
       console.log(`[Authoritative Server] Round ${expiredRound.id} (Level ${expiredRound.level}) timed out and ended.`);
     } catch (err) {
@@ -76,10 +77,13 @@ async function startServer() {
       if (isAllowedLanOrigin(origin)) {
         callback(null, true);
       } else {
+        console.warn(`[CORS HTTP] Rejected untrusted origin: "${origin}"`);
         callback(new Error('CORS origin not allowed on LAN server'));
       }
     },
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-team-token', 'x-admin-token']
   }));
   app.use(cookieParser());
   app.use(express.json({ limit: '10mb' }));
@@ -96,6 +100,16 @@ async function startServer() {
   app.use('/api/auth', authRoutes);
   app.use('/api/game', gameRoutes);
   app.use('/api/admin', adminRoutes);
+
+  // 8.5 Centralized JSON API error handler (ensures all unhandled API errors return JSON)
+  app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('[API Error]:', err);
+    if (res.headersSent) return;
+    const statusCode = typeof err?.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
+    res.status(statusCode).json({
+      error: err?.message || 'An unexpected internal server error occurred.'
+    });
+  });
 
   // 9. Production React Static App Serving
   const publicDir = CONFIG.PUBLIC_DIR;

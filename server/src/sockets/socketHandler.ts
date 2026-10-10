@@ -311,6 +311,7 @@ export function setupSocketIO(io: SocketIOServer): void {
 export function broadcastGameState(): void {
   if (!ioInstance) return;
   const state = GameService.getPublicGameState();
+  ioInstance.emit('game:state_changed', state);
   ioInstance.to(`session:${state.session_id}`).emit('game:state_changed', state);
 }
 
@@ -323,6 +324,7 @@ export function broadcastRoundEvent(
 ): void {
   if (!ioInstance) return;
   const { session } = GameService.getGameSession();
+  ioInstance.emit(eventType, data);
   ioInstance.to(`session:${session.id}`).emit(eventType, data);
   // Also push updated overall game state
   broadcastGameState();
@@ -345,13 +347,24 @@ export function emitToAdmin(event: string, payload: any): void {
 }
 
 /**
+ * Broadcast tournament reset cleanly to all connected participant terminals
+ */
+export function broadcastGameReset(newSessionId: string): void {
+  if (!ioInstance) return;
+  for (const [, socket] of ioInstance.sockets.sockets) {
+    socket.join(`session:${newSessionId}`);
+  }
+  ioInstance.emit('game:reset', { session_id: newSessionId });
+  broadcastGameState();
+}
+
+/**
  * Broadcast that final results have been published.
  *
  * Privacy: the full ranked leaderboard (every team's scores) is sent ONLY to
  * the admin channel. Participants receive a scores-free `results:published`
- * signal on the session channel; each team then fetches its OWN result via
- * GET /api/game/my-result. This prevents leaking global standings or other
- * teams' scores to participants over Socket.IO.
+ * signal; each team then fetches its OWN result via GET /api/game/my-result.
+ * This prevents leaking global standings or other teams' scores to participants.
  */
 export function broadcastLeaderboard(leaderboard: any): void {
   if (!ioInstance) return;
@@ -359,5 +372,7 @@ export function broadcastLeaderboard(leaderboard: any): void {
   // Full standings → administrators only.
   ioInstance.to('admin_channel').emit('leaderboard:published', leaderboard);
   // Scores-free signal → all participant terminals.
+  ioInstance.emit('results:published', { is_published: true });
   ioInstance.to(`session:${session.id}`).emit('results:published', { is_published: true });
 }
+

@@ -172,7 +172,85 @@ router.post('/level2/replay', requireTeamAuth, rateLimiter(5000, 20, 'Replaying 
 });
 
 /**
- * Submit Level 2 Final Conclusion
+ * Submit Level 2 Question 1 (Vault Keypad PIN)
+ * Route: POST /api/game/level2/submit-q1
+ */
+router.post('/level2/submit-q1', requireTeamAuth, (req: Request, res: Response): void => {
+  try {
+    const { pin } = req.body || {};
+    if (!pin || typeof pin !== 'string') {
+      res.status(400).json({ error: 'Please enter a PIN to submit.' });
+      return;
+    }
+
+    const q1Result = GameService.submitLevel2Question1(req.team!.id, pin);
+
+    // Push fresh private state to the team's devices
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    emitToAdmin('submission:created', {
+      team_id: req.team!.id,
+      team_name: req.team!.team_name,
+      question: 1,
+      is_correct: q1Result.is_correct,
+      score: q1Result.score
+    });
+
+    res.json({
+      success: true,
+      message: q1Result.is_correct ? 'Correct vault PIN verified!' : 'Incorrect vault PIN.',
+      q1: q1Result
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to submit Question 1.' });
+  }
+});
+
+/**
+ * Submit Level 2 Question 2 (Suspect identification & reasoning)
+ * Route: POST /api/game/level2/submit-q2
+ */
+router.post('/level2/submit-q2', requireTeamAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { selected_suspect, explanation } = req.body || {};
+    if (!selected_suspect || typeof selected_suspect !== 'string') {
+      res.status(400).json({ error: 'Please select a suspect.' });
+      return;
+    }
+    if (!explanation || typeof explanation !== 'string' || explanation.trim().length < 10) {
+      res.status(400).json({ error: 'Please provide an explanation of at least 10 characters.' });
+      return;
+    }
+
+    const q2Result = await GameService.submitLevel2Question2(
+      req.team!.id,
+      selected_suspect,
+      explanation
+    );
+
+    // Push fresh private state to the team's devices
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    emitToAdmin('submission:created', {
+      team_id: req.team!.id,
+      team_name: req.team!.team_name,
+      question: 2,
+      score: q2Result.score,
+      status: q2Result.evaluation?.status || 'completed'
+    });
+
+    res.json({
+      success: true,
+      message: 'Question 2 submitted and evaluated.',
+      q2: q2Result
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to submit Question 2.' });
+  }
+});
+
+/**
+ * Submit Level 2 Final Conclusion (legacy backward compatibility)
  * Route: POST /api/game/level2/conclusion
  */
 router.post('/level2/conclusion', requireTeamAuth, (req: Request, res: Response): void => {

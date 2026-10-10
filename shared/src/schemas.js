@@ -97,7 +97,8 @@ export const adminEvaluationOverrideSchema = z.object({
     conclusion_id: z.string().uuid(),
     score: z.number().min(0),
     verdict: z.string().trim().min(1, 'Verdict is required').max(100),
-    reasoning: z.string().trim().nullable().optional()
+    reasoning: z.string().trim().nullable().optional(),
+    q1_score: z.number().min(0).max(5).optional()
 });
 export const adminSettingsSchema = z.object({
     // Deprecated: Round 1 timing comes from per-question timers. Optional so the

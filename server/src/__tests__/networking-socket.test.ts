@@ -11,7 +11,7 @@ import { getDb, closeDb } from '../database/db.js';
 import { setupDatabase } from '../database/setup.js';
 import { GameService } from '../services/gameService.js';
 import { setupSocketIO, broadcastGameState, broadcastRoundEvent, emitToTeam, emitToAdmin, broadcastLeaderboard } from '../sockets/socketHandler.js';
-import { isAllowedLanOrigin } from '../utils/network.js';
+import { isAllowedLanOrigin, getPrimaryLanIpv4 } from '../utils/network.js';
 import { hashToken } from '../utils/crypto.js';
 import { AdminUser } from '@nexus/shared';
 
@@ -404,6 +404,10 @@ describe('Socket.IO Networking, Authentication & Room Isolation', () => {
     expect(isAllowedLanOrigin('http://172.16.0.1:3000')).toBe(true);
     expect(isAllowedLanOrigin('http://172.31.255.255:3000')).toBe(true);
     expect(isAllowedLanOrigin('http://169.254.12.34:3000')).toBe(true);
+    expect(isAllowedLanOrigin('http://100.64.0.1:3000')).toBe(true);
+    expect(isAllowedLanOrigin('http://nexus.local:3000')).toBe(true);
+    expect(isAllowedLanOrigin(`http://${getPrimaryLanIpv4()}:3000`)).toBe(true);
+    expect(isAllowedLanOrigin(`http://${getPrimaryLanIpv4()}:5173`)).toBe(true);
 
     // Untrusted external origins & public IPs
     expect(isAllowedLanOrigin('http://evil-attacker.com')).toBe(false);

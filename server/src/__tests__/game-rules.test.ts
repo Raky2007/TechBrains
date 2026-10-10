@@ -3,11 +3,11 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, closeDb } from '../database/db.js';
-import { GameService } from '../services/gameService.js';
+import { GameService, normalizeVaultPin, isVaultPinCorrect } from '../services/gameService.js';
 import { setupDatabase } from '../database/setup.js';
 import { seedDatabase } from '../database/seed.js';
 import { calculateLevel1Score, calculateAuthoritativeLeaderboard } from '../services/scoringService.js';
-import { getAuthoritativeTimerState, isRoundExpired, recoverRoundsOnStartup } from '../services/timerService.js';
+import { getAuthoritativeTimerState, isRoundExpired, recoverRoundsOnStartup, checkAuthoritativeDeadlines, registerTimerCallbacks } from '../services/timerService.js';
 import { CONFIG } from '../config.js';
 import { Level1Question } from '@nexus/shared';
 
@@ -110,15 +110,15 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
 
     // Correct AI: +1
     expect(calculateLevel1Score('AI', qAI)).toEqual({ isCorrect: true, awardedPoints: 1 });
-    // Incorrect AI/Human: -1
-    expect(calculateLevel1Score('HUMAN', qAI)).toEqual({ isCorrect: false, awardedPoints: -1 });
+    // Incorrect AI/Human: 0 (No negative marking in Level 1)
+    expect(calculateLevel1Score('HUMAN', qAI)).toEqual({ isCorrect: false, awardedPoints: 0 });
     // Can't Determine: 0 (never penalised)
     expect(calculateLevel1Score('CANT_DEFINE', qAI)).toEqual({ isCorrect: false, awardedPoints: 0 });
 
     // Correct Human: +1
     expect(calculateLevel1Score('HUMAN', qHuman)).toEqual({ isCorrect: true, awardedPoints: 1 });
-    // Incorrect AI/Human: -1
-    expect(calculateLevel1Score('AI', qHuman)).toEqual({ isCorrect: false, awardedPoints: -1 });
+    // Incorrect AI/Human: 0 (No negative marking in Level 1)
+    expect(calculateLevel1Score('AI', qHuman)).toEqual({ isCorrect: false, awardedPoints: 0 });
     // Can't Determine: 0
     expect(calculateLevel1Score('CANT_DEFINE', qHuman)).toEqual({ isCorrect: false, awardedPoints: 0 });
 
@@ -127,8 +127,8 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
     expect(calculateLevel1Score('CANT_DEFINE', qCant)).toEqual({ isCorrect: true, awardedPoints: 0 });
   });
 
-  it('3b. Negative scoring is applied to the team total server-side and can go below zero', () => {
-    const { team } = GameService.registerTeam('Negative Nellies');
+  it('3b. Level 1 negative marking removed: incorrect answers award 0 and team score never falls below zero', () => {
+    const { team } = GameService.registerTeam('No Negative Team');
     const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
     const { round } = GameService.startRound(admin.id, 1);
 
@@ -136,21 +136,22 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
       .prepare('SELECT question_id FROM team_question_assignments WHERE round_id = ? AND team_id = ? ORDER BY question_order ASC')
       .all(round.id, team.id) as { question_id: string }[];
 
-    // Deliberately answer the first two AI/HUMAN questions wrongly to force -1 each.
+    // Deliberately answer the first two AI/HUMAN questions wrongly
     let wrongApplied = 0;
     for (const a of assignments) {
       const q = getDb().prepare('SELECT * FROM level1_questions WHERE id = ?').get(a.question_id) as Level1Question;
-      if (q.correct_answer === 'CANT_DEFINE') continue; // skip neutral questions
+      if (q.correct_answer === 'CANT_DEFINE') continue;
       const wrongAnswer = q.correct_answer === 'AI' ? 'HUMAN' : 'AI';
       const res = GameService.submitLevel1Answer(team.id, q.id, wrongAnswer);
-      expect(res.awarded_points).toBe(-1);
+      expect(res.awarded_points).toBe(0);
       expect(res.is_correct).toBe(false);
       wrongApplied++;
       if (wrongApplied === 2) break;
     }
 
     const updated = getDb().prepare('SELECT level1_score FROM teams WHERE id = ?').get(team.id) as { level1_score: number };
-    expect(updated.level1_score).toBe(-wrongApplied);
+    expect(updated.level1_score).toBe(0);
+    expect(updated.level1_score).toBeGreaterThanOrEqual(0);
   });
 
   it('4. Repeated answer submissions cannot award duplicate points', () => {
@@ -998,4 +999,368 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
     expect(recoveredRound.status).toBe('ended');
     expect(recoveredRound.ended_at).toBeDefined();
   });
+
+  describe('Lifecycle Bug Fixes & Multi-Session Isolation (Phase B)', () => {
+    it('LIFECYCLE-1. Expired round from an archived session cannot end a newly started level', async () => {
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+      const db = getDb();
+
+      // Create a completed previous session with an active but expired round
+      const oldSessionId = uuidv4();
+      db.prepare(`
+        INSERT INTO game_sessions (id, name, status, settings_json, created_at, updated_at)
+        VALUES (?, 'Completed Session', 'completed', '{}', datetime('now', '-2 hours'), datetime('now', '-2 hours'))
+      `).run(oldSessionId);
+
+      const oldExpiredRoundId = uuidv4();
+      db.prepare(`
+        INSERT INTO rounds (id, game_session_id, level, status, started_at, deadline_at, settings_snapshot_json, created_at)
+        VALUES (?, ?, 1, 'active', datetime('now', '-1 hour'), datetime('now', '-30 minutes'), '{}', datetime('now', '-1 hour'))
+      `).run(oldExpiredRoundId, oldSessionId);
+
+      // Now start Level 1 in the active session
+      const { round: newRound } = GameService.startRound(admin.id, 1);
+      expect(newRound.status).toBe('active');
+
+      let callbackTriggeredRoundId: string | null = null;
+      // Register mock callback like server/src/index.ts does
+      const mockIo = { emit: () => {} } as any;
+      registerTimerCallbacks(mockIo, async (expired) => {
+        callbackTriggeredRoundId = expired.id;
+        try {
+          await GameService.endRound(null, expired.level, expired.id);
+        } catch (e) {}
+      });
+
+      // Run deadline check
+      await checkAuthoritativeDeadlines();
+
+      // The old expired round MUST NOT trigger the callback
+      expect(callbackTriggeredRoundId).toBeNull();
+
+      // The new round MUST still be active
+      const currentRound = db.prepare('SELECT status FROM rounds WHERE id = ?').get(newRound.id) as any;
+      expect(currentRound.status).toBe('active');
+
+      const gameState = GameService.getPublicGameState();
+      expect(gameState.status).toBe('level1_active');
+    });
+
+    it('LIFECYCLE-2. Starting Level 1 does not immediately end it or start Level 2', async () => {
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+      const { round } = GameService.startRound(admin.id, 1);
+
+      // Call deadline check multiple times immediately after starting
+      await checkAuthoritativeDeadlines();
+      await checkAuthoritativeDeadlines();
+
+      const state = GameService.getPublicGameState();
+      expect(state.status).toBe('level1_active');
+      expect(state.round?.id).toBe(round.id);
+      expect(state.round?.status).toBe('active');
+      expect(state.round?.level).toBe(1);
+    });
+
+    it('LIFECYCLE-3. Deadline monitoring only processes eligible rounds in the authoritative active session', async () => {
+      const db = getDb();
+      // Insert another session with an expired round
+      const foreignSessionId = uuidv4();
+      db.prepare(`
+        INSERT INTO game_sessions (id, name, status, settings_json, created_at, updated_at)
+        VALUES (?, 'Foreign Session', 'completed', '{}', datetime('now', '-1 day'), datetime('now', '-1 day'))
+      `).run(foreignSessionId);
+
+      const foreignRoundId = uuidv4();
+      db.prepare(`
+        INSERT INTO rounds (id, game_session_id, level, status, started_at, deadline_at, settings_snapshot_json, created_at)
+        VALUES (?, ?, 2, 'active', datetime('now', '-10 minutes'), datetime('now', '-5 minutes'), '{}', datetime('now', '-10 minutes'))
+      `).run(foreignRoundId, foreignSessionId);
+
+      let triggered = false;
+      registerTimerCallbacks({ emit: () => {} } as any, async () => {
+        triggered = true;
+      });
+
+      await checkAuthoritativeDeadlines();
+      expect(triggered).toBe(false);
+    });
+
+    it('LIFECYCLE-4. Exact round targeting cannot terminate another round or session', () => {
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+      const { round } = GameService.startRound(admin.id, 1);
+
+      // Attempting to end with a non-existent targetRoundId must fail
+      expect(() => {
+        GameService.endRound(admin.id, 1, '00000000-0000-0000-0000-000000000000');
+      }).toThrow();
+
+      // Attempting to end with wrong level must fail
+      expect(() => {
+        GameService.endRound(admin.id, 2, round.id);
+      }).toThrow();
+
+      // Verify original round was NOT terminated by the failed attempts
+      const currentRound = getDb().prepare('SELECT status FROM rounds WHERE id = ?').get(round.id) as any;
+      expect(currentRound.status).toBe('active');
+
+      const gameState = GameService.getPublicGameState();
+      expect(gameState.status).toBe('level1_active');
+    });
+
+    it('LIFECYCLE-5. Reset closes the appropriate active and paused rounds while preserving historical records', () => {
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+      const { round } = GameService.startRound(admin.id, 1);
+      expect(round.status).toBe('active');
+
+      // Reset game
+      GameService.resetGame(admin.id);
+
+      // Verify the round was marked ended
+      const closedRound = getDb().prepare('SELECT status, ended_at FROM rounds WHERE id = ?').get(round.id) as any;
+      expect(closedRound.status).toBe('ended');
+      expect(closedRound.ended_at).toBeDefined();
+
+      // Verify new session exists and game status is idle
+      const state = GameService.getPublicGameState();
+      expect(state.status).toBe('idle');
+      expect(state.round).toBeNull();
+
+      // Verify historical game_sessions records were preserved
+      const sessionCount = (getDb().prepare('SELECT COUNT(*) as c FROM game_sessions').get() as any).c;
+      expect(sessionCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('LIFECYCLE-6. Startup recovery preserves valid current-session state', () => {
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+      const { round } = GameService.startRound(admin.id, 1);
+
+      // Run startup recovery when round has a future deadline
+      recoverRoundsOnStartup();
+
+      // Round must still be active!
+      const roundInDb = getDb().prepare('SELECT status FROM rounds WHERE id = ?').get(round.id) as any;
+      expect(roundInDb.status).toBe('active');
+
+      const state = GameService.getPublicGameState();
+      expect(state.status).toBe('level1_active');
+    });
+
+    it('LIFECYCLE-7. Duplicate expiration callbacks cannot corrupt state or award scores twice', async () => {
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+      const { team } = GameService.registerTeam('Duplicate Safe');
+      const { round } = GameService.startRound(admin.id, 1);
+
+      // Submit an answer
+      const roundId = latestL1RoundId();
+      const q = getDb().prepare('SELECT question_id FROM team_question_assignments WHERE round_id = ? AND team_id = ? LIMIT 1').get(roundId, team.id) as { question_id: string };
+      GameService.submitLevel1Answer(team.id, q.question_id, 'AI');
+
+      // First expiration / endRound call
+      const ended1 = GameService.endRound(null, 1, round.id);
+      expect(ended1.session.status).toBe('level1_ended');
+      expect(ended1.round.status).toBe('ended');
+
+      const initialScore = (getDb().prepare('SELECT level1_score FROM teams WHERE id = ?').get(team.id) as any).level1_score;
+
+      // Second consecutive call (duplicate callback) must be rejected
+      expect(() => {
+        GameService.endRound(null, 1, round.id);
+      }).toThrow();
+
+      // Score and state must be intact and not double-counted
+      const scoreAfter = (getDb().prepare('SELECT level1_score FROM teams WHERE id = ?').get(team.id) as any).level1_score;
+      expect(scoreAfter).toBe(initialScore);
+
+      const state = GameService.getPublicGameState();
+      expect(state.status).toBe('level1_ended');
+    });
+  });
+
+  describe('Level 2 Investigation — Q1 PIN & Q2 Nemotron AI', () => {
+    let savedAiProvider: string;
+
+    beforeEach(() => {
+      savedAiProvider = CONFIG.AI.PROVIDER;
+      CONFIG.AI.PROVIDER = 'mock';
+    });
+
+    afterEach(() => {
+      CONFIG.AI.PROVIDER = savedAiProvider;
+    });
+
+    it('Q1-PIN-1. Correct PIN formats (0728, 728, 7:28) normalize and validate; permutations (2780, 8270) rejected', () => {
+      // Valid accepted formats
+      expect(normalizeVaultPin('0728')).toBe('0728');
+      expect(isVaultPinCorrect('0728')).toBe(true);
+
+      expect(normalizeVaultPin('728')).toBe('0728');
+      expect(isVaultPinCorrect('728')).toBe(true);
+
+      expect(normalizeVaultPin('7:28')).toBe('0728');
+      expect(isVaultPinCorrect('7:28')).toBe(true);
+
+      expect(normalizeVaultPin(' 07-28 ')).toBe('0728');
+      expect(isVaultPinCorrect(' 07-28 ')).toBe(true);
+
+      expect(normalizeVaultPin('07:28')).toBe('0728');
+      expect(isVaultPinCorrect('07:28')).toBe(true);
+
+      // Permutations of the same digits must NOT be accepted
+      expect(isVaultPinCorrect('2780')).toBe(false);
+      expect(isVaultPinCorrect('8270')).toBe(false);
+      expect(isVaultPinCorrect('2870')).toBe(false);
+      expect(isVaultPinCorrect('0827')).toBe(false);
+
+      // Arbitrary inputs
+      expect(isVaultPinCorrect('1234')).toBe(false);
+      expect(isVaultPinCorrect('0000')).toBe(false);
+      expect(isVaultPinCorrect('')).toBe(false);
+    });
+
+    it('Q1-PIN-2. Question 1 scores deterministically (5 pts if correct, 0 pts if incorrect) without invoking Nemotron', () => {
+      const { team } = GameService.registerTeam('PIN Cracker Team');
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+      GameService.startRound(admin.id, 1);
+      GameService.endRound(admin.id, 1);
+      GameService.startRound(admin.id, 2);
+
+      // Correct PIN submission: awards 5 points
+      const result = GameService.submitLevel2Question1(team.id, '7:28');
+      expect(result.is_submitted).toBe(true);
+      expect(result.is_correct).toBe(true);
+      expect(result.score).toBe(5);
+      expect(result.max_score).toBe(5);
+
+      // Verify stored score
+      const updatedTeam = getDb().prepare('SELECT level2_score FROM teams WHERE id = ?').get(team.id) as any;
+      expect(updatedTeam.level2_score).toBe(5);
+
+      // Duplicate submission is rejected
+      expect(() => {
+        GameService.submitLevel2Question1(team.id, '0728');
+      }).toThrow(/already been submitted/i);
+    });
+
+    it('Q1-PIN-3. Incorrect Question 1 PIN awards 0 points', () => {
+      const { team } = GameService.registerTeam('Wrong PIN Team');
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+      GameService.startRound(admin.id, 1);
+      GameService.endRound(admin.id, 1);
+      GameService.startRound(admin.id, 2);
+
+      const result = GameService.submitLevel2Question1(team.id, '9999');
+      expect(result.is_submitted).toBe(true);
+      expect(result.is_correct).toBe(false);
+      expect(result.score).toBe(0);
+
+      const updatedTeam = getDb().prepare('SELECT level2_score FROM teams WHERE id = ?').get(team.id) as any;
+      expect(updatedTeam.level2_score).toBe(0);
+    });
+
+    it('Q2-NEMO-1. Question 2 invokes Nemotron evaluation and receives a validated 0-5 score with structured fields', async () => {
+      const { team } = GameService.registerTeam('Forensic Team A');
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+      GameService.startRound(admin.id, 1);
+      GameService.endRound(admin.id, 1);
+      GameService.startRound(admin.id, 2);
+
+      const exp = 'Kabir took ORION because the exported video at 7:45 was a looped copy of 7:28. The rear maintenance hatch had broken compound and the workstation badge matched K on the ledger.';
+      const res = await GameService.submitLevel2Question2(team.id, 'Kabir', exp);
+
+      expect(res.is_submitted).toBe(true);
+      expect(res.score).toBeGreaterThanOrEqual(0);
+      expect(res.score).toBeLessThanOrEqual(5);
+      expect(res.max_score).toBe(5);
+
+      expect(res.evaluation).toBeDefined();
+      expect(res.evaluation?.selected_suspect_correct).toBe(true);
+      expect(res.evaluation?.accuracy_summary).toBeTruthy();
+      expect(res.evaluation?.closest_answer).toBeTruthy();
+      expect(res.evaluation?.feedback).toBeTruthy();
+      expect(res.evaluation?.status).toBe('completed');
+
+      // Duplicate Q2 submission rejected
+      await expect(
+        GameService.submitLevel2Question2(team.id, 'Kabir', 'Another explanation.')
+      ).rejects.toThrow(/already been submitted/i);
+    });
+
+    it('Q2-NEMO-2. Rubric gives 0-2 for incorrect suspect even with good observations', async () => {
+      const { team } = GameService.registerTeam('Wrong Suspect Team');
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+      GameService.startRound(admin.id, 1);
+      GameService.endRound(admin.id, 1);
+      GameService.startRound(admin.id, 2);
+
+      // Selected Meera (wrong suspect), but mentioned the video loop
+      const exp = 'Meera took it because the video was looped at 7:28 and the door access log had no entry.';
+      const res = await GameService.submitLevel2Question2(team.id, 'Meera', exp);
+
+      expect(res.is_submitted).toBe(true);
+      expect(res.evaluation?.selected_suspect_correct).toBe(false);
+      // Rubric: Suspect score is 0. Maximum possible is partial marks (<= 3)
+      expect(res.score).toBeLessThanOrEqual(3);
+    });
+
+    it('CLUES-ISO-1. Clues and credit deductions are completely isolated between Question 1 and Question 2', () => {
+      const { team } = GameService.registerTeam('Clue Isolated Team');
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+      GameService.startRound(admin.id, 1);
+      GameService.endRound(admin.id, 1);
+      GameService.startRound(admin.id, 2);
+
+      // Initialize team credit pool to 200
+      GameService.initLevelCredits(team.id, 1, 200);
+
+      const db = getDb();
+      const q1Clue = db.prepare("SELECT * FROM clues WHERE question_number = 1 AND tier = 'simple' LIMIT 1").get() as any;
+      const q2Clue = db.prepare("SELECT * FROM clues WHERE question_number = 2 AND tier = 'simple' LIMIT 1").get() as any;
+
+      expect(q1Clue).toBeDefined();
+      expect(q2Clue).toBeDefined();
+      expect(q1Clue.credit_cost).toBe(50);
+      expect(q2Clue.credit_cost).toBe(50);
+
+      // Unlock Q1 simple clue
+      const un1 = GameService.unlockLevel2Clue(team.id, q1Clue.id);
+      expect(un1.credits_spent).toBe(50);
+      expect(un1.remaining_credits).toBe(150);
+
+      // Verify team state: Q1 clue is unlocked, Q2 clue is NOT unlocked
+      const state = GameService.getTeamPrivateState(team.id);
+      const clientQ1 = state.level2?.clues.find(c => c.id === q1Clue.id);
+      const clientQ2 = state.level2?.clues.find(c => c.id === q2Clue.id);
+
+      expect(clientQ1?.is_unlocked).toBe(true);
+      expect(clientQ1?.content).toBeTruthy();
+
+      expect(clientQ2?.is_unlocked).toBe(false);
+      expect(clientQ2?.content).toBeUndefined(); // Never leak locked content
+    });
+
+    it('OVERRIDE-1. Manual admin score override takes precedence and updates both questions', () => {
+      const { team } = GameService.registerTeam('Override Team');
+      const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+
+      GameService.startRound(admin.id, 1);
+      GameService.endRound(admin.id, 1);
+      GameService.startRound(admin.id, 2);
+
+      // Submit Q1 (wrong) and legacy conclusion
+      GameService.submitLevel2Question1(team.id, '1111'); // 0 pts
+      const conclusion = GameService.submitConclusion(team.id, 'Kabir was the person who took ORION.');
+
+      // Admin manual override: Q1 = 5, Q2 = 4
+      GameService.overrideEvaluation(admin.id, conclusion.id, 4, 'Strong', 'Verified forensic evidence manually.', 5);
+
+      const teamRow = getDb().prepare('SELECT level2_score FROM teams WHERE id = ?').get(team.id) as any;
+      expect(teamRow.level2_score).toBe(9); // 5 + 4 = 9
+    });
+  });
 });
+

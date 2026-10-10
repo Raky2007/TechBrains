@@ -9,6 +9,7 @@ import {
   broadcastRoundEvent,
   broadcastGameState,
   broadcastLeaderboard,
+  broadcastGameReset,
   getAllTeamsPresence,
   emitToTeam,
   banAndDisconnectTeam
@@ -112,6 +113,7 @@ router.post('/controls', (req: Request, res: Response): void => {
       }
       case 'complete_event': {
         const updatedSession = GameService.completeEvent(adminId);
+        broadcastRoundEvent('round:ended', { level: 2, round: null });
         broadcastGameState();
         res.json({ success: true, message: 'Event marked complete.', session: updatedSession });
         break;
@@ -126,7 +128,7 @@ router.post('/controls', (req: Request, res: Response): void => {
       }
       case 'reset_game': {
         const newSession = GameService.resetGame(adminId);
-        broadcastGameState();
+        broadcastGameReset(newSession.id);
         res.json({ success: true, message: 'Game reset successfully.', session: newSession });
         break;
       }
@@ -162,9 +164,13 @@ router.post('/upload', uploadMedia.single('media'), (req: Request, res: Response
 /**
  * Level 1 Questions CRUD
  */
-router.get('/questions', (_req: Request, res: Response): void => {
+router.get('/questions', (req: Request, res: Response): void => {
   const db = getDb();
-  const questions = db.prepare('SELECT * FROM level1_questions ORDER BY created_at DESC').all();
+  const includeArchived = req.query.include_archived === 'true';
+  const query = includeArchived
+    ? 'SELECT * FROM level1_questions ORDER BY created_at DESC'
+    : 'SELECT * FROM level1_questions WHERE is_active = 1 ORDER BY created_at DESC';
+  const questions = db.prepare(query).all();
   res.json({ questions });
 });
 
@@ -269,18 +275,23 @@ router.delete('/questions/:id', (req: Request, res: Response): void => {
     const { id } = req.params;
     const db = getDb();
 
-    // Check if referenced in historical rounds
-    const isReferenced = db.prepare('SELECT COUNT(*) as count FROM team_question_assignments WHERE question_id = ?').get(id) as any;
-    if (isReferenced.count > 0) {
-      // Archive instead of breaking relational integrity
-      db.prepare('UPDATE level1_questions SET is_active = 0 WHERE id = ?').run(id);
-      logAuditAction(req.adminUser!.id, 'ARCHIVE_QUESTION', 'level1_questions', id);
-      res.json({ success: true, message: 'Question was referenced in historical rounds and has been archived.' });
-    } else {
-      db.prepare('DELETE FROM level1_questions WHERE id = ?').run(id);
-      logAuditAction(req.adminUser!.id, 'DELETE_QUESTION', 'level1_questions', id);
-      res.json({ success: true, message: 'Question deleted successfully.' });
+    // Check if Round 1 is actively running
+    const activeRound = db.prepare(`SELECT id FROM rounds WHERE level = 1 AND status = 'active'`).get();
+    if (activeRound) {
+      res.status(400).json({ error: 'Cannot delete question while Round 1 is actively running. End or pause the round first.' });
+      return;
     }
+
+    const question = db.prepare('SELECT id, title FROM level1_questions WHERE id = ?').get(id) as any;
+    if (!question) {
+      res.status(404).json({ error: 'Question not found.' });
+      return;
+    }
+
+    // Permanently remove question (cascades to team_question_assignments and team_answers)
+    db.prepare('DELETE FROM level1_questions WHERE id = ?').run(id);
+    logAuditAction(req.adminUser!.id, 'DELETE_QUESTION', 'level1_questions', id, { title: question.title });
+    res.json({ success: true, message: 'Question deleted successfully.' });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to delete question.' });
   }
@@ -293,7 +304,7 @@ router.get('/cases', (_req: Request, res: Response): void => {
   const db = getDb();
   const cases = db.prepare('SELECT * FROM level2_cases ORDER BY created_at DESC').all() as any[];
   for (const c of cases) {
-    c.clues = db.prepare('SELECT * FROM clues WHERE case_id = ? ORDER BY display_order ASC').all(c.id);
+    c.clues = db.prepare('SELECT * FROM clues WHERE case_id = ? AND is_active = 1 ORDER BY display_order ASC').all(c.id);
     c.media = db.prepare('SELECT * FROM case_media WHERE case_id = ? ORDER BY display_order ASC').all(c.id);
   }
   res.json({ cases });
@@ -501,18 +512,22 @@ router.delete('/clues/:id', (req: Request, res: Response): void => {
     const { id } = req.params;
     const db = getDb();
 
-    // If the clue has already been unlocked by any team, archive it instead of
-    // deleting — preserving clue_unlocks and credit_transactions history.
-    const isReferenced = (db.prepare('SELECT COUNT(*) as count FROM clue_unlocks WHERE clue_id = ?').get(id) as any).count;
-    if (isReferenced > 0) {
-      db.prepare('UPDATE clues SET is_active = 0, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
-      logAuditAction(req.adminUser!.id, 'ARCHIVE_CLUE', 'clues', id);
-      res.json({ success: true, message: 'Clue was already purchased by teams and has been archived.' });
-    } else {
-      db.prepare('DELETE FROM clues WHERE id = ?').run(id);
-      logAuditAction(req.adminUser!.id, 'DELETE_CLUE', 'clues', id);
-      res.json({ success: true, message: 'Clue removed.' });
+    // Check if Round 2 is actively running
+    const activeRound = db.prepare(`SELECT id FROM rounds WHERE level = 2 AND status = 'active'`).get();
+    if (activeRound) {
+      res.status(400).json({ error: 'Cannot delete clue while Round 2 is actively in progress.' });
+      return;
     }
+
+    const clue = db.prepare('SELECT id, title FROM clues WHERE id = ?').get(id) as any;
+    if (!clue) {
+      res.status(404).json({ error: 'Clue not found.' });
+      return;
+    }
+
+    db.prepare('DELETE FROM clues WHERE id = ?').run(id);
+    logAuditAction(req.adminUser!.id, 'DELETE_CLUE', 'clues', id, { title: clue.title });
+    res.json({ success: true, message: 'Clue removed successfully.' });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to delete clue.' });
   }
@@ -686,39 +701,134 @@ router.get('/submissions', (_req: Request, res: Response): void => {
   const db = getDb();
   const { session } = GameService.getGameSession();
 
-  const submissions = db.prepare(`
-    SELECT
-      c.id as conclusion_id,
-      c.team_id,
-      c.conclusion_text,
-      c.status,
-      c.submitted_at,
-      t.team_name,
-      t.current_credits,
-      t.initial_credits,
-      t.level1_score,
-      t.level2_score,
-      (SELECT COALESCE(SUM(credits_spent), 0) FROM clue_unlocks WHERE team_id = t.id) as clue_credits_spent,
-      (SELECT COUNT(*) FROM clue_unlocks WHERE team_id = t.id) as unlocked_count,
-      (SELECT COUNT(*) FROM media_replays WHERE team_id = t.id) as replay_count,
-      (SELECT COALESCE(SUM(credits_spent), 0) FROM media_replays WHERE team_id = t.id) as replay_credits_spent,
-      e.id as evaluation_id,
-      e.status as evaluation_status,
-      e.score as evaluation_score,
-      e.max_score as evaluation_max_score,
-      e.verdict as evaluation_verdict,
-      e.reasoning as evaluation_reasoning,
-      e.source as evaluation_source,
-      e.is_overridden as evaluation_is_overridden,
-      e.error_message as evaluation_error,
-      e.attempt_count as evaluation_attempts,
-      e.updated_at as evaluated_at
-    FROM conclusions c
-    JOIN teams t ON t.id = c.team_id
-    LEFT JOIN case_evaluations e ON e.conclusion_id = c.id
+  // Find all teams in the session that have submitted Q1, Q2, or a conclusion
+  const teamRows = db.prepare(`
+    SELECT DISTINCT t.id as team_id, t.team_name, t.current_credits, t.initial_credits,
+           t.level1_score, t.level2_score
+    FROM teams t
     WHERE t.game_session_id = ?
-    ORDER BY c.submitted_at DESC
-  `).all(session.id);
+      AND (
+        EXISTS (SELECT 1 FROM conclusions c WHERE c.team_id = t.id)
+        OR EXISTS (SELECT 1 FROM level2_question_submissions lqs WHERE lqs.team_id = t.id)
+      )
+  `).all(session.id) as any[];
+
+  const submissions = teamRows.map((t) => {
+    const q1 = db.prepare(`
+      SELECT * FROM level2_question_submissions
+      WHERE team_id = ? AND question_number = 1
+      ORDER BY submitted_at DESC LIMIT 1
+    `).get(t.team_id) as any;
+
+    const q2 = db.prepare(`
+      SELECT * FROM level2_question_submissions
+      WHERE team_id = ? AND question_number = 2
+      ORDER BY submitted_at DESC LIMIT 1
+    `).get(t.team_id) as any;
+
+    const c = db.prepare(`
+      SELECT * FROM conclusions
+      WHERE team_id = ?
+      ORDER BY submitted_at DESC LIMIT 1
+    `).get(t.team_id) as any;
+
+    const e = c ? db.prepare(`
+      SELECT * FROM case_evaluations WHERE conclusion_id = ?
+    `).get(c.id) as any : null;
+
+    const clueSpent = (db.prepare(`
+      SELECT COALESCE(SUM(credits_spent), 0) as s, COUNT(*) as c
+      FROM clue_unlocks WHERE team_id = ?
+    `).get(t.team_id) as any);
+
+    const replaySpent = (db.prepare(`
+      SELECT COALESCE(SUM(credits_spent), 0) as s, COUNT(*) as c
+      FROM media_replays WHERE team_id = ?
+    `).get(t.team_id) as any);
+
+    let q2Data: any = null;
+    if (q2?.evaluation_data_json) {
+      try { q2Data = JSON.parse(q2.evaluation_data_json); } catch {}
+    }
+
+    const effectiveScore = q2 ? q2.score : e?.score;
+    const effectiveVerdict = q2Data?.verdict || e?.verdict || null;
+    const effectiveReasoning = q2Data?.reasoning || e?.reasoning || null;
+
+    let matchedEvidence = q2Data?.matched_evidence || [];
+    if (typeof matchedEvidence === 'string') {
+      try { matchedEvidence = JSON.parse(matchedEvidence); } catch { matchedEvidence = [matchedEvidence]; }
+    }
+    if (!matchedEvidence.length && e?.q2_matched_evidence) {
+      try { matchedEvidence = JSON.parse(e.q2_matched_evidence); } catch { matchedEvidence = [e.q2_matched_evidence]; }
+    }
+
+    let missingEvidence = q2Data?.missing_evidence || [];
+    if (typeof missingEvidence === 'string') {
+      try { missingEvidence = JSON.parse(missingEvidence); } catch { missingEvidence = [missingEvidence]; }
+    }
+    if (!missingEvidence.length && e?.q2_missing_evidence) {
+      try { missingEvidence = JSON.parse(e.q2_missing_evidence); } catch { missingEvidence = [e.q2_missing_evidence]; }
+    }
+
+    return {
+      conclusion_id: c?.id || q2?.id || q1?.id,
+      team_id: t.team_id,
+      team_name: t.team_name,
+      current_credits: t.current_credits,
+      initial_credits: t.initial_credits,
+      level1_score: t.level1_score,
+      level2_score: t.level2_score,
+      conclusion_text: c?.conclusion_text || q2?.explanation || null,
+      submitted_at: q2?.submitted_at || c?.submitted_at || q1?.submitted_at,
+
+      // Question 1 details
+      q1_submitted: !!q1,
+      q1_pin: q1?.pin_submitted || null,
+      q1_pin_normalized: q1?.pin_normalized || null,
+      q1_is_correct: q1 ? q1.is_correct === 1 : null,
+      q1_score: q1 ? q1.score : null,
+      q1_max_score: 5,
+      q1_submitted_at: q1?.submitted_at || null,
+
+      // Question 2 details
+      q2_submitted: !!q2 || !!c,
+      q2_selected_suspect: q2?.selected_suspect || c?.q2_selected_suspect || null,
+      q2_explanation: q2?.explanation || c?.q2_explanation || c?.conclusion_text || null,
+      q2_score: effectiveScore,
+      q2_max_score: 5,
+      q2_status: q2?.evaluation_status || e?.status || (c ? 'pending' : null),
+
+      // Structured Evaluation fields
+      selected_suspect_correct: q2Data?.selected_suspect_correct ?? (e?.q2_selected_suspect_correct === 1),
+      closest_answer: q2Data?.closest_answer || e?.q2_closest_answer || null,
+      accuracy_summary: q2Data?.accuracy_summary || e?.q2_accuracy_summary || null,
+      matched_evidence: matchedEvidence,
+      missing_evidence: missingEvidence,
+      feedback: q2Data?.feedback || e?.q2_feedback || null,
+
+      // Evaluation overall / legacy fields
+      evaluation_id: e?.id,
+      evaluation_status: q2?.evaluation_status || e?.status || 'completed',
+      evaluation_score: effectiveScore,
+      evaluation_max_score: 5,
+      evaluation_verdict: effectiveVerdict,
+      evaluation_reasoning: effectiveReasoning,
+      evaluation_source: e?.source || 'ai',
+      evaluation_is_overridden: e?.is_overridden === 1,
+      evaluation_error: e?.error_message || null,
+      evaluation_attempts: e?.attempt_count || 0,
+      evaluated_at: e?.updated_at || q2?.updated_at || null,
+
+      // Stats
+      unlocked_count: clueSpent?.c || 0,
+      clue_credits_spent: clueSpent?.s || 0,
+      replay_count: replaySpent?.c || 0,
+      replay_credits_spent: replaySpent?.s || 0
+    };
+  });
+
+  submissions.sort((a, b) => new Date(b.submitted_at || 0).getTime() - new Date(a.submitted_at || 0).getTime());
 
   res.json({ submissions });
 });
@@ -750,8 +860,15 @@ router.post('/evaluations/override', (req: Request, res: Response): void => {
       res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid override.' });
       return;
     }
-    const { conclusion_id, score, verdict, reasoning } = parseResult.data;
-    const evaluation = GameService.overrideEvaluation(req.adminUser!.id, conclusion_id, score, verdict, reasoning || null);
+    const { conclusion_id, score, verdict, reasoning, q1_score } = parseResult.data;
+    const evaluation = GameService.overrideEvaluation(
+      req.adminUser!.id,
+      conclusion_id,
+      score,
+      verdict,
+      reasoning || null,
+      q1_score
+    );
     const teamId = (getDb().prepare('SELECT team_id FROM conclusions WHERE id = ?').get(conclusion_id) as any)?.team_id;
     if (teamId) emitToTeam(teamId, 'team:private_updated', GameService.getTeamPrivateState(teamId));
     res.json({ success: true, evaluation });

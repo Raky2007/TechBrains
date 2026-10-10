@@ -157,6 +157,12 @@ export const TeamLayout: React.FC = () => {
       }
     };
 
+    const onGameReset = () => {
+      console.log('[Socket] Tournament game has been reset by administrator');
+      removeStoredTeamToken();
+      window.location.href = '/';
+    };
+
     socket.on('game:state_changed', onGlobalChange);
     socket.on('round:started', () => onGlobalChange());
     socket.on('round:paused', () => onGlobalChange());
@@ -164,6 +170,7 @@ export const TeamLayout: React.FC = () => {
     socket.on('round:ended', () => onGlobalChange());
     socket.on('results:published', () => onGlobalChange());
     socket.on('team:private_updated', onPrivateUpdate);
+    socket.on('game:reset', onGameReset);
 
     const onSessionReplaced = (payload?: SessionReplacedPayload) => {
       console.warn('[Socket] Team session replaced by another connection');
@@ -195,6 +202,7 @@ export const TeamLayout: React.FC = () => {
       socket.off('round:ended');
       socket.off('results:published', onGlobalChange);
       socket.off('team:private_updated', onPrivateUpdate);
+      socket.off('game:reset', onGameReset);
       socket.off('team:session_replaced', onSessionReplaced);
       socket.off('team:banned', onTeamBanned);
     };

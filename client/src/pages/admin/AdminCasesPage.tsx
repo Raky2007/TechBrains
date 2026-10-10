@@ -140,7 +140,7 @@ export const AdminCasesPage: React.FC = () => {
   };
 
   const handleDeleteClue = async (clueId: string) => {
-    if (!window.confirm('Remove this clue?')) return;
+    if (!window.confirm('Are you sure you want to delete this clue?')) return;
     try {
       await apiFetch(`/api/admin/clues/${clueId}`, { method: 'DELETE' });
       await fetchCases();
@@ -208,7 +208,7 @@ export const AdminCasesPage: React.FC = () => {
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-heading font-bold text-[#171717]">Round 2 Cases & Clues</h1>
+          <h1 className="text-2xl font-heading font-bold text-[#171717]">Level 2 Cases & Clues</h1>
           <p className="text-xs text-[#737373] font-mono mt-0.5">
             Configure the case, media viewing window, replay cost, text clues, reference answer and AI guidance.
           </p>
@@ -350,7 +350,7 @@ export const AdminCasesPage: React.FC = () => {
         ))}
         {cases.length === 0 && (
           <div className="text-center py-12 text-sm font-mono text-[#737373] border border-dashed border-[#E5E5E5] rounded-2xl">
-            No cases yet. Create one to configure Round 2.
+            No cases yet. Create one to configure Level 2.
           </div>
         )}
       </div>

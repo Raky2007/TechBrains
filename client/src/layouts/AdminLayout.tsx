@@ -61,14 +61,14 @@ export const AdminLayout: React.FC = () => {
     items: { label: string; to: string; icon: typeof LayoutDashboard; end?: boolean }[];
   }[] = [
     {
-      heading: 'Round 1',
+      heading: 'Level 1',
       items: [
         { label: 'Questions', to: '/admin/questions', icon: HelpCircle },
         { label: 'Settings', to: '/admin/round1', icon: Settings },
       ],
     },
     {
-      heading: 'Round 2',
+      heading: 'Level 2',
       items: [
         { label: 'Questions', to: '/admin/cases', icon: FolderSearch },
         { label: 'Settings', to: '/admin/round2', icon: Settings },
