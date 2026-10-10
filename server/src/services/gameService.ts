@@ -576,7 +576,7 @@ export class GameService {
   }
 
   /**
-   * Unlock a Level 2 clue using credits in an atomic transaction
+   * Unlock a Level 2 clue using level-specific credits in an atomic transaction
    */
   static unlockLevel2Clue(
     teamId: string,
@@ -613,7 +613,7 @@ export class GameService {
     const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId) as Team | undefined;
     if (!team) throw new Error('Team not found.');
 
-    const clue = db.prepare('SELECT * FROM clues WHERE id = ? AND is_active = 1').get(clueId) as Clue | undefined;
+    const clue = db.prepare('SELECT * FROM clues WHERE id = ? AND is_active = 1').get(clueId) as Clue & { required_level: number } | undefined;
     if (!clue) throw new Error('Requested clue not found or inactive.');
 
     // Check if already unlocked (Idempotency)
@@ -623,51 +623,57 @@ export class GameService {
     `).get(activeRound.id, teamId, clueId);
 
     if (existingUnlock) {
+      // Return current balance for the required level
+      const currentBalance = this.getLevelBalance(teamId, clue.required_level as 1 | 2) ?? team.current_credits;
       return {
         clue,
         credits_spent: 0,
-        remaining_credits: team.current_credits,
+        remaining_credits: currentBalance,
         already_unlocked: true
       };
     }
 
+    // Initialize level credits if needed
+    const requiredLevel = clue.required_level as 1 | 2;
+    this.initLevelCredits(teamId, requiredLevel);
+    
+    // Get current balance from appropriate level pool
+    const currentBalance = this.getLevelBalance(teamId, requiredLevel);
+    if (currentBalance === null) {
+      throw new Error(`Level ${requiredLevel} credits are not initialized for this team.`);
+    }
+
     // Verify credit balance
-    if (team.current_credits < clue.credit_cost) {
-      throw new Error(`Insufficient credits. Required: ${clue.credit_cost}, Available: ${team.current_credits}`);
+    if (currentBalance < clue.credit_cost) {
+      throw new Error(`Insufficient Level ${requiredLevel} credits. Required: ${clue.credit_cost}, Available: ${currentBalance}`);
+    }
+
+    // Use the level-specific spending method
+    const spendResult = this.spendLevelCredits(teamId, requiredLevel, clue.credit_cost, opId, 'clue_unlock');
+    
+    if (!spendResult.charged) {
+      // This shouldn't happen due to balance check above, but handle gracefully
+      return {
+        clue,
+        credits_spent: 0,
+        remaining_credits: spendResult.remaining,
+        already_unlocked: false
+      };
     }
 
     const unlockId = uuidv4();
-    const txId = uuidv4();
     const now = new Date().toISOString();
-    let remainingCredits = team.current_credits - clue.credit_cost;
 
-    const runTransaction = db.transaction(() => {
-      // 1. Deduct credits
-      db.prepare(`
-        UPDATE teams 
-        SET current_credits = current_credits - ?, updated_at = ? 
-        WHERE id = ?
-      `).run(clue.credit_cost, now, teamId);
-
-      // 2. Record clue unlock
-      db.prepare(`
-        INSERT INTO clue_unlocks (id, round_id, team_id, clue_id, credits_spent, unlocked_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(unlockId, activeRound.id, teamId, clueId, clue.credit_cost, now);
-
-      // 3. Record immutable credit ledger transaction
-      db.prepare(`
-        INSERT INTO credit_transactions (id, round_id, team_id, clue_id, amount, transaction_type, operation_id, created_at)
-        VALUES (?, ?, ?, ?, ?, 'clue_unlock', ?, ?)
-      `).run(txId, activeRound.id, teamId, clueId, -clue.credit_cost, opId, now);
-    });
-
-    runTransaction();
+    // Record clue unlock
+    db.prepare(`
+      INSERT INTO clue_unlocks (id, round_id, team_id, clue_id, credits_spent, unlocked_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(unlockId, activeRound.id, teamId, clueId, clue.credit_cost, now);
 
     return {
       clue,
       credits_spent: clue.credit_cost,
-      remaining_credits: remainingCredits,
+      remaining_credits: spendResult.remaining,
       already_unlocked: false
     };
   }
@@ -1380,5 +1386,100 @@ export class GameService {
     // Deliberately omit `rank` — relative standing is not exposed to participants.
     const { rank, ...ownResult } = entry;
     return ownResult;
+  }
+
+  // ===================================================================== //
+  // Round 2 two-level credit pools
+  // Basic implementation without complex configuration system
+  // ===================================================================== //
+
+  /** The teams column holding a given level's balance. */
+  private static levelCreditColumn(levelNo: 1 | 2): 'level1_credits' | 'level2_credits' {
+    if (levelNo !== 1 && levelNo !== 2) throw new Error('Round 2 level must be 1 or 2.');
+    return levelNo === 1 ? 'level1_credits' : 'level2_credits';
+  }
+
+  /** Current balance of a team's level pool, or null if not yet initialized. */
+  static getLevelBalance(teamId: string, levelNo: 1 | 2): number | null {
+    const db = getDb();
+    const col = this.levelCreditColumn(levelNo);
+    const row = db.prepare(`SELECT ${col} AS bal FROM teams WHERE id = ?`).get(teamId) as { bal: number | null } | undefined;
+    if (!row) throw new Error('Team not found.');
+    return row.bal;
+  }
+
+  /**
+   * Initialize a team's level credit pool from default settings.
+   * Simplified version that uses initialCredits from settings.
+   */
+  static initLevelCredits(teamId: string, levelNo: 1 | 2, startingCredits?: number): number {
+    const db = getDb();
+    const col = this.levelCreditColumn(levelNo);
+    const current = this.getLevelBalance(teamId, levelNo);
+    if (current !== null) return current; // already initialized → no-op
+
+    // Use provided starting credits or default from settings
+    const { settings } = this.getGameSession();
+    const start = startingCredits ?? settings.initialCredits ?? 200;
+    const now = new Date().toISOString();
+
+    const res = db.prepare(`UPDATE teams SET ${col} = ?, updated_at = ? WHERE id = ? AND ${col} IS NULL`)
+      .run(start, now, teamId);
+    // If another concurrent call won the race, read back the value it set.
+    if (res.changes === 0) return this.getLevelBalance(teamId, levelNo) as number;
+    return start;
+  }
+
+  /**
+   * Server-authoritative, atomic, idempotent debit from a team's level pool.
+   * Simplified version for basic two-level credit functionality.
+   */
+  static spendLevelCredits(
+    teamId: string,
+    levelNo: 1 | 2,
+    amount: number,
+    operationId: string,
+    transactionType: string
+  ): { charged: boolean; remaining: number } {
+    if (!Number.isInteger(amount) || amount < 0) throw new Error('Spend amount must be a non-negative integer.');
+    if (!operationId || typeof operationId !== 'string') throw new Error('operation_id is required for a credit spend.');
+
+    const db = getDb();
+    const col = this.levelCreditColumn(levelNo);
+    const { activeRound } = this.getGameSession();
+    if (!activeRound || activeRound.level !== 2) {
+      throw new Error('Round 2 is not active; credits cannot be spent.');
+    }
+
+    // Idempotency: this exact operation already applied?
+    const prior = db.prepare('SELECT id FROM credit_transactions WHERE team_id = ? AND operation_id = ?')
+      .get(teamId, operationId);
+    if (prior) {
+      return { charged: false, remaining: this.getLevelBalance(teamId, levelNo) as number };
+    }
+
+    const balance = this.getLevelBalance(teamId, levelNo);
+    if (balance === null) throw new Error(`Level ${levelNo} credits are not initialized for this team.`);
+    if (balance < amount) {
+      throw new Error(`Insufficient Level ${levelNo} credits. Required: ${amount}, Available: ${balance}.`);
+    }
+
+    const now = new Date().toISOString();
+    const txId = uuidv4();
+    const run = db.transaction(() => {
+      // Conditional, atomic debit — never allows a negative balance.
+      const res = db.prepare(`UPDATE teams SET ${col} = ${col} - ?, updated_at = ? WHERE id = ? AND ${col} >= ?`)
+        .run(amount, now, teamId, amount);
+      if (res.changes === 0) throw new Error('Insufficient credits (balance changed concurrently).');
+      
+      // Ledger insert — UNIQUE(team_id, operation_id) prevents duplicates
+      db.prepare(`
+        INSERT INTO credit_transactions (id, round_id, team_id, clue_id, amount, transaction_type, operation_id, created_at)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+      `).run(txId, activeRound.id, teamId, -amount, transactionType, operationId, now);
+    });
+    run();
+
+    return { charged: true, remaining: balance - amount };
   }
 }

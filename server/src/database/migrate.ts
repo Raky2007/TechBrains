@@ -85,6 +85,22 @@ export function runMigrations(): string[] {
     ])
   );
 
+  // TechBrains Round 2 two-level credit pools. NULL = not yet initialized; each
+  // is seeded exactly once when the team first enters that level.
+  applied.push(
+    ...ensureColumns(db, 'teams', [
+      { name: 'level1_credits', definition: 'INTEGER' },
+      { name: 'level2_credits', definition: 'INTEGER' }
+    ])
+  );
+
+  // Level pools: add required_level to clues table for level-specific spending
+  applied.push(
+    ...ensureColumns(db, 'clues', [
+      { name: 'required_level', definition: 'INTEGER NOT NULL DEFAULT 1' }
+    ])
+  );
+
   if (applied.length > 0) {
     console.log(`[Migrate] Applied additive column migrations: ${applied.join(', ')}`);
   } else {

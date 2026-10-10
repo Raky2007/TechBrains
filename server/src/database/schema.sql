@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS teams (
     level2_score REAL NOT NULL DEFAULT 0,
     initial_credits INTEGER NOT NULL DEFAULT 200,
     current_credits INTEGER NOT NULL DEFAULT 200,
+    -- Round 2 two-level SEPARATE credit pools. NULL = not yet initialized; each
+    -- is seeded exactly once from the per-level starting_credits when the team
+    -- first enters that level. The legacy single pool `current_credits` is kept
+    -- untouched for backward compatibility and historical data.
+    level1_credits INTEGER,
+    level2_credits INTEGER,
     is_banned INTEGER NOT NULL DEFAULT 0 CHECK(is_banned IN (0, 1)),
     banned_at TEXT,
     banned_by TEXT REFERENCES admin_users(id),
@@ -124,6 +130,8 @@ CREATE TABLE IF NOT EXISTS clues (
     content TEXT NOT NULL,
     media_path TEXT,
     credit_cost INTEGER NOT NULL DEFAULT 20,
+    -- Which level's credit pool this clue should deduct from (1 or 2)
+    required_level INTEGER NOT NULL DEFAULT 1 CHECK(required_level IN (1, 2)),
     display_order INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     created_at TEXT NOT NULL,

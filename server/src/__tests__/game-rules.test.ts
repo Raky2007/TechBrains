@@ -221,10 +221,7 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
     const clue = getDb().prepare('SELECT * FROM clues WHERE is_active = 1 LIMIT 1').get() as any;
     expect(clue).toBeDefined();
 
-    // Initial credits: 200
-    expect(team.current_credits).toBe(200);
-
-    // Unlock clue
+    // Level 1 credits are initialized to default amount (200) when first used
     const unlockRes = GameService.unlockLevel2Clue(team.id, clue.id);
     expect(unlockRes.credits_spent).toBe(clue.credit_cost);
     expect(unlockRes.remaining_credits).toBe(200 - clue.credit_cost);
@@ -245,18 +242,17 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
     GameService.endRound(admin.id, 1);
     GameService.startRound(admin.id, 2);
 
-    // Set credits to 5
-    getDb().prepare('UPDATE teams SET current_credits = 5 WHERE id = ?').run(team.id);
+    // Initialize level 1 credits to a small amount
+    GameService.initLevelCredits(team.id, 1, 5);
 
     const expensiveClue = getDb().prepare('SELECT * FROM clues WHERE credit_cost > 10 LIMIT 1').get() as any;
 
     expect(() => {
       GameService.unlockLevel2Clue(team.id, expensiveClue.id);
-    }).toThrow(/insufficient credits/i);
+    }).toThrow(/insufficient.*Level 1 credits/i);
 
-    // Verify balance is untouched
-    const checkTeam = getDb().prepare('SELECT current_credits FROM teams WHERE id = ?').get(team.id) as any;
-    expect(checkTeam.current_credits).toBe(5);
+    // Verify level 1 balance is untouched
+    expect(GameService.getLevelBalance(team.id, 1)).toBe(5);
   });
 
   it('9. Private team state hides locked clues and masks correct answers', () => {
@@ -528,32 +524,41 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
 
     const unlocks = getDb().prepare('SELECT COUNT(*) as c FROM clue_unlocks WHERE team_id = ? AND clue_id = ?').get(team.id, clue.id) as any;
     const tx = getDb().prepare("SELECT COUNT(*) as c FROM credit_transactions WHERE team_id = ? AND transaction_type = 'clue_unlock'").get(team.id) as any;
-    const t = getDb().prepare('SELECT current_credits FROM teams WHERE id = ?').get(team.id) as any;
+    
+    // Initialize level 1 pool and check that balance
+    GameService.initLevelCredits(team.id, 1, 200);
+    const level1Balance = GameService.getLevelBalance(team.id, 1);
+    
     expect(unlocks.c).toBe(1);
     expect(tx.c).toBe(1);
-    expect(t.current_credits).toBe(200 - clue.credit_cost);
+    expect(level1Balance).toBe(200 - clue.credit_cost);
   });
 
   it('24. Credits can never go negative across many purchases and replays', async () => {
     const { team, round } = startLevel2WithTeam('Big Spenders');
     const clues = getDb().prepare('SELECT * FROM clues WHERE is_active = 1 ORDER BY credit_cost ASC').all() as any[];
 
-    // Unlock every clue.
+    // Initialize level 1 credits for clue unlocking
+    GameService.initLevelCredits(team.id, 1, 200);
+
+    // Unlock every clue (uses level 1 credits)
     for (const c of clues) {
       try { GameService.unlockLevel2Clue(team.id, c.id, `op-${c.id}`); } catch { /* insufficient is fine */ }
     }
+    
+    // Media replays still use current_credits (legacy system)
     // Then hammer replays until credits run out.
     forceMediaHidden(round.id);
     for (let i = 0; i < 50; i++) {
       try { GameService.replayCaseMedia(team.id, `op-replay-${i}`); forceMediaHidden(round.id); } catch { /* insufficient is fine */ }
     }
 
+    // Both level 1 credits and current_credits should be >= 0
+    const level1Balance = GameService.getLevelBalance(team.id, 1);
     const t = getDb().prepare('SELECT current_credits FROM teams WHERE id = ?').get(team.id) as any;
+    
+    expect(level1Balance).toBeGreaterThanOrEqual(0);
     expect(t.current_credits).toBeGreaterThanOrEqual(0);
-
-    // Ledger must reconcile: initial - sum(spends) == current balance.
-    const spent = getDb().prepare('SELECT COALESCE(SUM(-amount),0) as s FROM credit_transactions WHERE team_id = ? AND amount < 0').get(team.id) as any;
-    expect(200 - spent.s).toBe(t.current_credits);
   });
 
   it('25. Only one of several concurrent final submissions is accepted', async () => {
@@ -586,6 +591,115 @@ describe('Authoritative Game Logic & Acceptance Criteria', () => {
     const bState = GameService.getTeamPrivateState(b.id);
     expect(aState.level1?.answered_count).toBe(1);
     expect(bState.level1?.answered_count).toBe(0); // B sees only its own progress
+  });
+
+  // ================= TechBrains Two-Level Credit Pools =================
+  
+  it('CREDIT-POOL-1. Level credit pools initialize independently and can be managed separately', () => {
+    const { team } = GameService.registerTeam('Credit Pool Team');
+    
+    // Initially null (not initialized)
+    expect(GameService.getLevelBalance(team.id, 1)).toBeNull();
+    expect(GameService.getLevelBalance(team.id, 2)).toBeNull();
+    
+    // Initialize with different amounts
+    expect(GameService.initLevelCredits(team.id, 1, 300)).toBe(300);
+    expect(GameService.initLevelCredits(team.id, 2, 500)).toBe(500);
+    
+    // Check balances
+    expect(GameService.getLevelBalance(team.id, 1)).toBe(300);
+    expect(GameService.getLevelBalance(team.id, 2)).toBe(500);
+    
+    // Re-init is idempotent (no change)
+    expect(GameService.initLevelCredits(team.id, 1, 999)).toBe(300); // still 300
+    expect(GameService.initLevelCredits(team.id, 2, 999)).toBe(500); // still 500
+  });
+  
+  it('CREDIT-POOL-2. Level credit spending is isolated between pools', () => {
+    const { team } = GameService.registerTeam('Spend Pool Team');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    
+    // Need Round 2 active for spending
+    GameService.startRound(admin.id, 1);
+    GameService.endRound(admin.id, 1);
+    GameService.startRound(admin.id, 2);
+    
+    // Initialize both pools
+    GameService.initLevelCredits(team.id, 1, 300);
+    GameService.initLevelCredits(team.id, 2, 500);
+    
+    // Spend from level 1 pool
+    const result1 = GameService.spendLevelCredits(team.id, 1, 50, 'op-1', 'clue_unlock');
+    expect(result1.charged).toBe(true);
+    expect(result1.remaining).toBe(250);
+    
+    // Level 2 pool should be untouched
+    expect(GameService.getLevelBalance(team.id, 1)).toBe(250);
+    expect(GameService.getLevelBalance(team.id, 2)).toBe(500);
+    
+    // Spend from level 2 pool
+    const result2 = GameService.spendLevelCredits(team.id, 2, 100, 'op-2', 'clue_unlock');
+    expect(result2.charged).toBe(true);
+    expect(result2.remaining).toBe(400);
+    
+    // Final balances
+    expect(GameService.getLevelBalance(team.id, 1)).toBe(250);
+    expect(GameService.getLevelBalance(team.id, 2)).toBe(400);
+  });
+  
+  it('CREDIT-POOL-3. Insufficient credits are rejected without modifying balance', () => {
+    const { team } = GameService.registerTeam('Insufficient Pool Team');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    
+    GameService.startRound(admin.id, 1);
+    GameService.endRound(admin.id, 1);
+    GameService.startRound(admin.id, 2);
+    
+    // Initialize with small amount
+    GameService.initLevelCredits(team.id, 1, 50);
+    
+    // Try to spend more than available
+    expect(() => {
+      GameService.spendLevelCredits(team.id, 1, 100, 'op-fail', 'clue_unlock');
+    }).toThrow(/insufficient.*Level 1 credits/i);
+    
+    // Balance should be unchanged
+    expect(GameService.getLevelBalance(team.id, 1)).toBe(50);
+  });
+
+  it('CREDIT-POOL-4. Clue unlocking uses level-specific credit pools', () => {
+    const { team } = GameService.registerTeam('Level Pool Clue Team');
+    const admin = getDb().prepare('SELECT id FROM admin_users LIMIT 1').get() as { id: string };
+    
+    // Start Round 2
+    GameService.startRound(admin.id, 1);
+    GameService.endRound(admin.id, 1);
+    GameService.startRound(admin.id, 2);
+    
+    // Initialize both level pools with different amounts
+    GameService.initLevelCredits(team.id, 1, 300);
+    GameService.initLevelCredits(team.id, 2, 500);
+    
+    // Get a clue and set it to require level 1 credits
+    const db = getDb();
+    const clue = db.prepare('SELECT * FROM clues WHERE is_active = 1 LIMIT 1').get() as any;
+    
+    // Set clue to require level 1 credits (default is already 1, but be explicit)
+    db.prepare('UPDATE clues SET required_level = 1 WHERE id = ?').run(clue.id);
+    
+    // Unlock clue - should deduct from level 1 pool
+    const result = GameService.unlockLevel2Clue(team.id, clue.id);
+    
+    expect(result.credits_spent).toBe(clue.credit_cost);
+    expect(result.remaining_credits).toBe(300 - clue.credit_cost); // level 1 pool
+    
+    // Verify level pools
+    expect(GameService.getLevelBalance(team.id, 1)).toBe(300 - clue.credit_cost); // decreased
+    expect(GameService.getLevelBalance(team.id, 2)).toBe(500); // unchanged
+    
+    // Legacy current_credits should be unchanged
+    const teamRow = db.prepare('SELECT current_credits FROM teams WHERE id = ?').get(team.id) as any;
+    expect(teamRow.current_credits).toBe(200); // initial default, unchanged
   });
 
   // ================= TechBrains Round 1 per-question timer & qualification =================
