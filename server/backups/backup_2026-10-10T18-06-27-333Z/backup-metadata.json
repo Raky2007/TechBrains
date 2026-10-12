@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-10-10T18:06:27.400Z",
+  "databasePath": "C:\\Users\\rakes\\Downloads\\TB\\TechBrains\\nexus.db",
+  "backupPath": "C:\\Users\\rakes\\Downloads\\TB\\TechBrains\\server\\backups\\backup_2026-10-10T18-06-27-333Z",
+  "gameSession": {
+    "id": "0c945486-4ad3-43fb-b73d-3c7908badb44",
+    "name": "TechBrains Session 10:50:00 pm",
+    "status": "level2_ended",
+    "current_level": 2
+  },
+  "teamsCount": 19,
+  "answersCount": 20,
+  "conclusionsCount": 1
+}

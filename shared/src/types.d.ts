@@ -1,0 +1,521 @@
+/**
+ * Nexus Shared Types and Interfaces
+ */
+export type GameStatus = 'idle' | 'level1_active' | 'level1_paused' | 'level1_ended' | 'level2_active' | 'level2_paused' | 'level2_ended' | 'completed';
+export type RoundStatus = 'active' | 'paused' | 'ended';
+export type Level1AnswerChoice = 'AI' | 'HUMAN' | 'CANT_DEFINE';
+export type ContentType = 'image' | 'video' | 'text';
+export type ConclusionStatus = 'draft' | 'submitted' | 'reopened';
+export interface GameSettings {
+    /**
+     * @deprecated Round 1 no longer uses a single overall timer. Total Round 1
+     * duration is the sum of each question's individual timer. Retained only for
+     * backward compatibility with existing stored sessions; not admin-configured.
+     */
+    level1DurationMinutes: number;
+    level2DurationMinutes: number;
+    initialCredits: number;
+    /** Explicit, consistent maximum for the Round 2 evaluation score (default 20). */
+    round2MaxScore: number;
+    /**
+     * Round 1 qualification cutoff. After Round 1 ends, only teams whose final
+     * Round 1 score is >= this value qualify for Round 2. Default 0 (everyone
+     * qualifies). Enforced server-side.
+     */
+    round1CutoffScore: number;
+    resultsPublished: boolean;
+    tieBreakerRule: 'default' | 'l2_first' | 'l1_accuracy' | 'time_first';
+    randomizeQuestionOrder: boolean;
+}
+export type EvaluationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'overridden';
+export type EvaluationSource = 'ai' | 'manual';
+export type CaseMediaType = 'image' | 'video' | 'audio';
+export interface RubricConfig {
+    maxAccuracy: number;
+    maxReasoning: number;
+    maxEfficiency: number;
+    maxTotal: number;
+}
+export interface GameSession {
+    id: string;
+    name: string;
+    status: GameStatus;
+    current_level: 1 | 2 | null;
+    settings_json: string;
+    created_at: string;
+    updated_at: string;
+}
+export interface Team {
+    id: string;
+    game_session_id: string;
+    team_name: string;
+    player1_roll?: string | null;
+    player2_roll?: string | null;
+    access_token_hash: string;
+    level1_score: number;
+    level2_score: number;
+    initial_credits: number;
+    current_credits: number;
+    assigned_case_id?: string | null;
+    is_banned?: number;
+    banned_at?: string | null;
+    banned_by?: string | null;
+    ban_reason?: string | null;
+    created_at: string;
+    updated_at: string;
+}
+export interface AdminUser {
+    id: string;
+    username: string;
+    password_hash: string;
+    created_at: string;
+    updated_at: string;
+}
+export interface Level1Question {
+    id: string;
+    title: string;
+    prompt: string;
+    content_type: ContentType;
+    media_path: string | null;
+    correct_answer: Level1AnswerChoice;
+    explanation: string | null;
+    category: string | null;
+    difficulty: 'easy' | 'medium' | 'hard' | null;
+    /** Per-question server-authoritative countdown, in seconds. */
+    time_limit_seconds: number;
+    /** Points awarded for a correct answer (default 3, 0 for incorrect/can't determine). */
+    points_value?: number;
+    is_active: number;
+    created_at: string;
+    updated_at: string;
+}
+/**
+ * Question payload sent to client (NEVER includes correct_answer or explanation)
+ */
+export interface ClientLevel1Question {
+    id: string;
+    title: string;
+    prompt: string;
+    content_type: ContentType;
+    media_path: string | null;
+    category: string | null;
+    difficulty: string | null;
+    question_order: number;
+    total_questions: number;
+    is_answered: boolean;
+    selected_answer?: Level1AnswerChoice;
+    awarded_points?: number;
+    /** Per-question timer (seconds) for this specific question. */
+    time_limit_seconds: number;
+    /**
+     * Server-authoritative deadline (ISO) for the CURRENT unanswered question.
+     * The client renders remaining time from this; the server decides timeout.
+     */
+    deadline_at?: string | null;
+    /**
+     * The correct answer. ONLY ever populated for a question this team has
+     * already answered (revealed post-submission). Never present on an
+     * unanswered/current question, in any API response or socket event.
+     */
+    correct_answer?: Level1AnswerChoice;
+}
+export interface Round {
+    id: string;
+    game_session_id: string;
+    level: 1 | 2;
+    status: RoundStatus;
+    started_at: string;
+    deadline_at: string;
+    paused_at: string | null;
+    remaining_seconds: number | null;
+    settings_snapshot_json: string;
+    created_at: string;
+    ended_at: string | null;
+}
+export interface TeamQuestionAssignment {
+    id: string;
+    round_id: string;
+    team_id: string;
+    question_id: string;
+    question_order: number;
+}
+export interface TeamAnswer {
+    id: string;
+    round_id: string;
+    team_id: string;
+    question_id: string;
+    selected_answer: Level1AnswerChoice;
+    is_correct: number;
+    awarded_points: number;
+    submitted_at: string;
+}
+export interface Level2Case {
+    id: string;
+    title: string;
+    situation_description: string;
+    media_path: string | null;
+    initial_credits: number;
+    is_active: number;
+    rubric_json: string;
+    viewing_duration_seconds: number;
+    replay_cost: number;
+    reference_answer: string | null;
+    evaluation_guidance: string | null;
+    case_number?: number;
+    q1_title?: string | null;
+    q1_prompt?: string | null;
+    q1_correct_pin?: string | null;
+    q1_pin_evidence?: string | null;
+    q1_accepted_formats_json?: string | null;
+    q2_title?: string | null;
+    q2_prompt?: string | null;
+    created_at: string;
+    updated_at: string;
+}
+export interface CaseMedia {
+    id: string;
+    case_id: string;
+    media_type: CaseMediaType;
+    media_path: string;
+    caption: string | null;
+    display_order: number;
+    created_at: string;
+}
+export interface MediaReplay {
+    id: string;
+    round_id: string;
+    team_id: string;
+    case_id: string;
+    credits_spent: number;
+    operation_id: string;
+    created_at: string;
+}
+export interface CaseEvaluation {
+    id: string;
+    conclusion_id: string;
+    status: EvaluationStatus;
+    score: number | null;
+    max_score: number;
+    verdict: string | null;
+    reasoning: string | null;
+    provider: string | null;
+    model: string | null;
+    source: EvaluationSource;
+    is_overridden: number;
+    error_message: string | null;
+    attempt_count: number;
+    evaluator_id: string | null;
+    created_at: string;
+    updated_at: string;
+}
+export interface Clue {
+    id: string;
+    case_id: string;
+    title: string;
+    content: string;
+    media_path: string | null;
+    credit_cost: number;
+    display_order: number;
+    question_number: 1 | 2;
+    tier: 'simple' | 'medium' | 'high';
+    is_active: number;
+    created_at: string;
+    updated_at: string;
+}
+/**
+ * Clue list item sent to team. TechBrains clues are TEXT ONLY — content is
+ * hidden until the clue is unlocked by the team.
+ */
+export interface ClientClue {
+    id: string;
+    title: string;
+    credit_cost: number;
+    display_order: number;
+    question_number: 1 | 2;
+    tier: 'simple' | 'medium' | 'high';
+    is_unlocked: boolean;
+    content?: string;
+    unlocked_at?: string;
+}
+export interface Level2Q1Result {
+    is_submitted: boolean;
+    submitted_pin: string | null;
+    is_correct: boolean | null;
+    score: number;
+    max_score: number;
+    submitted_at?: string | null;
+}
+export interface Level2Q2Evaluation {
+    score: number;
+    max_score: number;
+    suspect_score?: number;
+    evidence_score?: number;
+    logic_score?: number;
+    selected_suspect_correct: boolean;
+    closest_answer: string;
+    accuracy_summary: string;
+    matched_evidence: string[] | string;
+    missing_evidence: string[] | string;
+    feedback: string;
+    status: EvaluationStatus;
+    verdict?: string;
+    reasoning?: string;
+}
+export interface Level2Q2Result {
+    is_submitted: boolean;
+    selected_suspect: string | null;
+    explanation: string | null;
+    score: number | null;
+    max_score: number;
+    evaluation?: Level2Q2Evaluation | null;
+    submitted_at?: string | null;
+}
+export interface Level2QuestionSubmission {
+    id: string;
+    round_id: string;
+    team_id: string;
+    question_number: 1 | 2;
+    pin_submitted: string | null;
+    pin_normalized: string | null;
+    is_correct: boolean | null;
+    selected_suspect: string | null;
+    explanation: string | null;
+    score: number;
+    max_score: number;
+    evaluation_status: EvaluationStatus;
+    evaluation_data_json: string | null;
+    submitted_at: string;
+    updated_at: string;
+}
+/**
+ * Case media item sent to team (only delivered while media is viewable)
+ */
+export interface ClientCaseMedia {
+    id: string;
+    media_type: CaseMediaType;
+    media_path: string;
+    caption: string | null;
+    display_order: number;
+}
+export interface ClueUnlock {
+    id: string;
+    round_id: string;
+    team_id: string;
+    clue_id: string;
+    credits_spent: number;
+    unlocked_at: string;
+}
+export interface CreditTransaction {
+    id: string;
+    round_id: string;
+    team_id: string;
+    clue_id: string | null;
+    amount: number;
+    transaction_type: 'initial_grant' | 'clue_unlock' | 'media_replay' | 'admin_adjustment';
+    operation_id: string;
+    created_at: string;
+}
+export interface Conclusion {
+    id: string;
+    round_id: string;
+    team_id: string;
+    conclusion_text: string;
+    status: ConclusionStatus;
+    submitted_at: string;
+    updated_at: string;
+}
+export interface Evaluation {
+    id: string;
+    conclusion_id: string;
+    accuracy_score: number;
+    reasoning_score: number;
+    efficiency_score: number;
+    total_score: number;
+    feedback: string | null;
+    evaluator_id: string;
+    evaluated_at: string;
+}
+export interface AuditLog {
+    id: string;
+    admin_user_id: string | null;
+    action: string;
+    entity_type: string;
+    entity_id: string | null;
+    details_json: string | null;
+    created_at: string;
+}
+export interface LeaderboardEntry {
+    rank: number;
+    team_id: string;
+    team_name: string;
+    player1_roll?: string | null;
+    player2_roll?: string | null;
+    level1_score: number;
+    level1_answered: number;
+    level1_accuracy_percent: number;
+    level2_score: number;
+    final_score: number;
+    credits_spent: number;
+    credits_remaining: number;
+    conclusion_submitted: boolean;
+    evaluation_completed: boolean;
+    evaluation_status?: EvaluationStatus | null;
+    final_submission_time: string | null;
+    is_banned?: boolean;
+    ban_reason?: string | null;
+    q1_score?: number;
+    q2_score?: number;
+}
+export interface PublicGameState {
+    session_id: string;
+    status: GameStatus;
+    current_level: 1 | 2 | null;
+    round: {
+        id: string;
+        level: 1 | 2;
+        status: RoundStatus;
+        deadline_at: string;
+        remaining_seconds: number;
+        is_paused: boolean;
+    } | null;
+    settings: GameSettings;
+    server_time: string;
+}
+/**
+ * Server-authoritative, TEAM-SPECIFIC navigation stage.
+ *
+ * This is the single source of truth for "where should THIS team be right now",
+ * combining the global event state with the team's own progress/eligibility.
+ * The participant UI navigates ONLY by this value — never by raw global status —
+ * so one team's progress can never move another team.
+ *
+ * - waiting:      event not started (or pre-Round-1) for this team
+ * - round1:       this team is actively playing Round 1
+ * - round1_done:  this team finished Round 1 (or Round 1 ended) — show its own
+ *                 completion screen and wait; other teams are unaffected
+ * - round2:       Round 2 is globally active AND this team qualified
+ * - not_qualified:Round 2 is globally active but this team did NOT qualify
+ * - result:       event completed / results published — show this team's result
+ */
+export type TeamStage = 'waiting' | 'round1' | 'round1_done' | 'round2' | 'not_qualified' | 'result';
+export interface TeamPrivateState {
+    /** Where this specific team should be (never derived from another team). */
+    stage: TeamStage;
+    team: {
+        id: string;
+        team_name: string;
+        current_credits: number;
+        level1_score: number;
+        level2_score: number;
+    };
+    level1?: {
+        current_question: ClientLevel1Question | null;
+        answered_count: number;
+        total_assigned: number;
+        is_completed: boolean;
+        /** Server clock (ISO) so the client can reconcile its per-question countdown. */
+        server_time: string;
+    };
+    /**
+     * Round 2 qualification for THIS team (present once Round 1 has concluded).
+     * Teams below the configured cutoff are not qualified and are blocked from
+     * Round 2 both in the UI and server-side.
+     */
+    round2_qualified?: boolean;
+    /** The Round 1 cutoff in effect (for participant messaging only). */
+    round1_cutoff?: number;
+    level2?: {
+        case: {
+            id: string;
+            title: string;
+            situation_description: string;
+            initial_credits: number;
+            case_number?: number;
+            q1_title?: string | null;
+            q1_prompt?: string | null;
+            q2_title?: string | null;
+            q2_prompt?: string | null;
+            media_path?: string | null;
+        } | null;
+        /** Server-authoritative media lifecycle for this team. */
+        media: {
+            /** Whether the case media is viewable by this team right now. */
+            is_visible: boolean;
+            /** True once the initial free viewing window has elapsed. */
+            initial_window_elapsed: boolean;
+            /** ISO timestamp when the current viewing window closes (null if hidden). */
+            viewing_ends_at: string | null;
+            viewing_duration_seconds: number;
+            replay_cost: number;
+            replay_count: number;
+            /** Media assets, only populated while is_visible is true. */
+            items: ClientCaseMedia[];
+        };
+        clues: ClientClue[];
+        /** True once this team has made its one irreversible final submission. */
+        is_locked: boolean;
+        /** Authoritative completion status and frozen timer for THIS team */
+        is_completed?: boolean;
+        completed_at?: string | null;
+        frozen_remaining_seconds?: number | null;
+        q1?: Level2Q1Result;
+        q2?: Level2Q2Result;
+        conclusion: {
+            text: string;
+            status: ConclusionStatus;
+            submitted_at: string | null;
+        } | null;
+        /** TechBrains AI/manual evaluation (null until evaluated). */
+        evaluation?: {
+            status: EvaluationStatus;
+            score: number | null;
+            max_score: number;
+            verdict: string | null;
+            reasoning: string | null;
+            is_overridden: boolean;
+        } | null;
+    };
+}
+export interface ServerAuthoritativeTimerState {
+    round_id: string;
+    level: 1 | 2;
+    status: RoundStatus;
+    server_time: string;
+    deadline_at: string;
+    remaining_seconds: number;
+    is_paused: boolean;
+}
+/** Key generation helper for participant client-side conclusion drafts */
+export declare function getConclusionDraftKey(teamId: string, sessionId?: string): string;
+/** In-memory presence payload broadcast strictly to admin_channel */
+export interface TeamPresencePayload {
+    team_id: string;
+    session_id: string;
+    is_connected: boolean;
+    ip_address: string | null;
+    ip_addresses: string[];
+    connections_count: number;
+    last_connected_at: string | null;
+}
+/** Admin team list record enriched with in-memory presence */
+export interface AdminTeamListItem extends Team {
+    answers_count?: number;
+    clues_unlocked_count?: number;
+    conclusion_status?: string | null;
+    is_connected?: boolean;
+    ip_address?: string | null;
+    ip_addresses?: string[];
+    connections_count?: number;
+    last_connected_at?: string | null;
+}
+/** Payload sent to an evicted socket when another device/tab connects */
+export interface SessionReplacedPayload {
+    message: string;
+    replaced_at?: string;
+}
+/** Payload sent to an evicted socket when a team is banned */
+export interface TeamBannedPayload {
+    message: string;
+    reason?: string | null;
+    banned_at?: string | null;
+}

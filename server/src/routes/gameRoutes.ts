@@ -1,0 +1,348 @@
+import { Router, Request, Response } from 'express';
+import { GameService } from '../services/gameService.js';
+import { requireTeamAuth, getAdminTokenFromRequest, verifyAdminToken, verifyTeamToken } from '../middleware/auth.js';
+import { getDb } from '../database/db.js';
+import { rateLimiter } from '../middleware/rateLimiter.js';
+import {
+  level1AnswerSchema,
+  level2UnlockClueSchema,
+  level2ReplaySchema,
+  level2SubmitConclusionSchema
+} from '@nexus/shared';
+import { emitToAdmin, emitToTeam, broadcastGameState, broadcastRoundEvent } from '../sockets/socketHandler.js';
+
+const router = Router();
+
+/**
+ * Public authoritative game state (accessible by any LAN client)
+ * Route: GET /api/game/state
+ */
+router.get('/state', (_req: Request, res: Response): void => {
+  try {
+    const state = GameService.getPublicGameState();
+    res.json(state);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to retrieve game state.' });
+  }
+});
+
+/**
+ * Team private progress and state (Level 1 questions, Level 2 clues & credits)
+ * Route: GET /api/game/team-state
+ */
+router.get('/team-state', requireTeamAuth, (req: Request, res: Response): void => {
+  try {
+    const teamState = GameService.getTeamPrivateState(req.team!.id);
+    res.json(teamState);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load team game state.' });
+  }
+});
+
+// NOTE: The participant "start-level" route has been removed. Global round
+// transitions (start/pause/resume/end/complete) are admin-only and live under
+// /api/admin/controls. Participants react to server-controlled state only.
+
+/**
+ * Submit Level 1 Answer
+ * Route: POST /api/game/level1/answer
+ */
+router.post('/level1/answer', requireTeamAuth, rateLimiter(5000, 30, 'Submitting too rapidly'), (req: Request, res: Response): void => {
+  try {
+    const parseResult = level1AnswerSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid answer payload.' });
+      return;
+    }
+
+    const { question_id, selected_answer } = parseResult.data;
+    const result = GameService.submitLevel1Answer(req.team!.id, question_id, selected_answer);
+
+    // Notify admin dashboard in real-time
+    emitToAdmin('team:score_updated', {
+      team_id: req.team!.id,
+      team_name: req.team!.team_name,
+      new_score: result.new_team_score,
+      level: 1
+    });
+
+    res.json({
+      success: true,
+      is_correct: result.is_correct,
+      awarded_points: result.awarded_points,
+      explanation: result.explanation,
+      // Correct answer is revealed ONLY in this direct response to the team's
+      // own accepted submission (never before submission, never to other teams).
+      correct_answer: result.correct_answer,
+      new_team_score: result.new_team_score
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to submit answer.' });
+  }
+});
+
+/**
+ * Unlock Level 2 Clue
+ * Route: POST /api/game/level2/unlock-clue
+ */
+router.post('/level2/unlock-clue', requireTeamAuth, rateLimiter(5000, 20, 'Purchasing too rapidly'), (req: Request, res: Response): void => {
+  try {
+    const parseResult = level2UnlockClueSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid clue unlock request.' });
+      return;
+    }
+
+    const { clue_id, operation_id } = parseResult.data;
+    const result = GameService.unlockLevel2Clue(req.team!.id, clue_id, operation_id);
+
+    // Broadcast credit update to admin
+    emitToAdmin('team:credits_updated', {
+      team_id: req.team!.id,
+      team_name: req.team!.team_name,
+      credits_spent: result.credits_spent,
+      remaining_credits: result.remaining_credits
+    });
+
+    // Push fresh private state to the team's own devices (multi-device sync).
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    res.json({
+      success: true,
+      clue: {
+        id: result.clue.id,
+        title: result.clue.title,
+        content: result.clue.content,
+        credit_cost: result.clue.credit_cost,
+        display_order: result.clue.display_order,
+        is_unlocked: true
+      },
+      credits_spent: result.credits_spent,
+      remaining_credits: result.remaining_credits,
+      already_unlocked: result.already_unlocked
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to unlock clue.' });
+  }
+});
+
+/**
+ * Replay Level 2 case media for credits (TechBrains)
+ * Route: POST /api/game/level2/replay
+ */
+router.post('/level2/replay', requireTeamAuth, rateLimiter(5000, 20, 'Replaying too rapidly'), (req: Request, res: Response): void => {
+  try {
+    const parseResult = level2ReplaySchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid replay request.' });
+      return;
+    }
+
+    const result = GameService.replayCaseMedia(req.team!.id, parseResult.data.operation_id);
+
+    // Notify admin dashboard of credit movement + replay activity.
+    if (result.credits_spent > 0) {
+      emitToAdmin('team:credits_updated', {
+        team_id: req.team!.id,
+        team_name: req.team!.team_name,
+        credits_spent: result.credits_spent,
+        remaining_credits: result.remaining_credits
+      });
+      emitToAdmin('team:replay', {
+        team_id: req.team!.id,
+        team_name: req.team!.team_name,
+        replay_count: result.replay_count
+      });
+    }
+
+    // Push fresh private state to the team's own devices (multi-device sync).
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    res.json({
+      success: true,
+      credits_spent: result.credits_spent,
+      remaining_credits: result.remaining_credits,
+      replay_count: result.replay_count,
+      viewing_ends_at: result.viewing_ends_at,
+      already_charged: result.already_charged,
+      already_visible: result.already_visible
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to replay case media.' });
+  }
+});
+
+/**
+ * Submit Level 2 Question 1 (Vault Keypad PIN)
+ * Route: POST /api/game/level2/submit-q1
+ */
+router.post('/level2/submit-q1', requireTeamAuth, (req: Request, res: Response): void => {
+  try {
+    const { pin } = req.body || {};
+    if (!pin || typeof pin !== 'string') {
+      res.status(400).json({ error: 'Please enter a PIN to submit.' });
+      return;
+    }
+
+    const q1Result = GameService.submitLevel2Question1(req.team!.id, pin);
+
+    // Push fresh private state to the team's devices
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    emitToAdmin('submission:created', {
+      team_id: req.team!.id,
+      team_name: req.team!.team_name,
+      question: 1,
+      is_correct: q1Result.is_correct,
+      score: q1Result.score
+    });
+
+    res.json({
+      success: true,
+      message: q1Result.is_correct ? 'Correct vault PIN verified!' : 'Incorrect vault PIN.',
+      q1: q1Result
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to submit Question 1.' });
+  }
+});
+
+/**
+ * Submit Level 2 Question 2 (Suspect identification & reasoning)
+ * Route: POST /api/game/level2/submit-q2
+ */
+router.post('/level2/submit-q2', requireTeamAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { selected_suspect, explanation } = req.body || {};
+    if (!selected_suspect || typeof selected_suspect !== 'string') {
+      res.status(400).json({ error: 'Please select a suspect.' });
+      return;
+    }
+    if (!explanation || typeof explanation !== 'string' || explanation.trim().length < 10) {
+      res.status(400).json({ error: 'Please provide an explanation of at least 10 characters.' });
+      return;
+    }
+
+    const q2Result = await GameService.submitLevel2Question2(
+      req.team!.id,
+      selected_suspect,
+      explanation
+    );
+
+    // Push fresh private state to the team's devices
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    emitToAdmin('submission:created', {
+      team_id: req.team!.id,
+      team_name: req.team!.team_name,
+      question: 2,
+      score: q2Result.score,
+      status: q2Result.evaluation?.status || 'completed'
+    });
+
+    res.json({
+      success: true,
+      message: 'Question 2 submitted and evaluated.',
+      q2: q2Result
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to submit Question 2.' });
+  }
+});
+
+/**
+ * Submit Level 2 Final Conclusion (legacy backward compatibility)
+ * Route: POST /api/game/level2/conclusion
+ */
+router.post('/level2/conclusion', requireTeamAuth, (req: Request, res: Response): void => {
+  try {
+    const parseResult = level2SubmitConclusionSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.errors[0]?.message || 'Invalid conclusion format.' });
+      return;
+    }
+
+    const { conclusion_text } = parseResult.data;
+    const conclusion = GameService.submitConclusion(req.team!.id, conclusion_text);
+
+    // Alert admin of new submission ready for evaluation
+    emitToAdmin('submission:created', {
+      conclusion_id: conclusion.id,
+      team_id: req.team!.id,
+      team_name: req.team!.team_name,
+      submitted_at: conclusion.submitted_at
+    });
+
+    // Trigger automatic AI evaluation (non-blocking; only if a provider is set).
+    GameService.autoEvaluate(conclusion.id);
+
+    // Push fresh locked private state to the team's own devices.
+    emitToTeam(req.team!.id, 'team:private_updated', GameService.getTeamPrivateState(req.team!.id));
+
+    res.json({
+      success: true,
+      message: 'Conclusion submitted for forensic evaluation.',
+      conclusion: {
+        id: conclusion.id,
+        status: conclusion.status,
+        submitted_at: conclusion.submitted_at
+      }
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to submit conclusion.' });
+  }
+});
+
+/**
+ * Full ranked leaderboard / global standings.
+ * Route: GET /api/game/leaderboard
+ */
+router.get('/leaderboard', (req: Request, res: Response): void => {
+  try {
+    const isVerifiedAdmin = !!verifyAdminToken(getAdminTokenFromRequest(req));
+    const { settings } = GameService.getGameSession();
+
+    // Standings are embargoed for participants until the admin explicitly publishes them.
+    if (!isVerifiedAdmin && !settings.resultsPublished) {
+      res.json({
+        is_published: false,
+        leaderboard: [],
+        message: 'The official leaderboard has not been published yet.'
+      });
+      return;
+    }
+
+    // Admins see full standings (including banned teams); participants see eligible teams only
+    const leaderboard = GameService.getLeaderboard({ includeBanned: isVerifiedAdmin });
+    res.json({ is_published: true, leaderboard });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to retrieve leaderboard.' });
+  }
+});
+
+/**
+ * A team's OWN result.
+ * Route: GET /api/game/my-result
+ */
+router.get('/my-result', requireTeamAuth, (req: Request, res: Response): void => {
+  try {
+    const { settings } = GameService.getGameSession();
+    const db = getDb();
+    const subQ1 = db.prepare(`SELECT id FROM level2_question_submissions WHERE team_id = ? AND question_number = 1`).get(req.team!.id);
+    const subQ2 = db.prepare(`SELECT id FROM level2_question_submissions WHERE team_id = ? AND question_number = 2`).get(req.team!.id);
+    const conc = db.prepare(`SELECT id FROM conclusions WHERE team_id = ? AND status = 'submitted'`).get(req.team!.id);
+    const hasCompletedL2 = Boolean((subQ1 && subQ2) || conc);
+
+    const result = GameService.getTeamResult(req.team!.id);
+
+    res.json({
+      is_published: !!settings.resultsPublished,
+      has_completed_l2: hasCompletedL2,
+      result
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to retrieve your result.' });
+  }
+});
+
+export default router;
